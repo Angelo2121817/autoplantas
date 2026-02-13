@@ -2,9 +2,8 @@ import streamlit as st
 from streamlit_elements import elements, mui, dashboard
 import pandas as pd
 
-st.set_page_config(page_title="AutoPlanta CETESB - General", layout="wide")
+st.set_page_config(page_title="AutoPlanta CETESB", layout="wide")
 
-# Inicializa o estado com a construção já visível
 if "layout" not in st.session_state:
     st.session_state.layout = [
         {"i": "construcao", "x": 0, "y": 0, "w": 6, "h": 4}
@@ -16,7 +15,7 @@ st.title("🏗️ Editor de Planta Baixa")
 
 with st.sidebar:
     st.header("⚙️ Ferramentas")
-    area_terreno = st.number_input("Área Total do Terreno (m²)", value=350.0) # Conforme Planta 2026 [cite: 72]
+    area_terreno = st.number_input("Área Total do Terreno (m²)", value=350.0)
     
     if st.button("🚪 Adicionar Portão"):
         id_p = f"Porta_{len(st.session_state.portas) + 1}"
@@ -34,7 +33,6 @@ col_desenho, col_dados = st.columns([3, 1])
 with col_desenho:
     st.write("👇 Arraste e redimensione os blocos abaixo:")
     
-    # O segredo está aqui: Definir uma altura fixa para o container
     with elements("dashboard"):
         with mui.Box(sx={"height": 500, "width": "100%", "border": "1px solid #ccc", "bgcolor": "#fafafa"}):
             with dashboard.Grid(
@@ -43,7 +41,6 @@ with col_desenho:
                 cols=12, 
                 rowHeight=50
             ):
-                # Galpão Principal (Estilo Planta 2026) [cite: 76]
                 mui.Paper(
                     "ÁREA CONSTRUÍDA",
                     key="construcao",
@@ -56,7 +53,6 @@ with col_desenho:
                         "boxShadow": 3
                     }
                 )
-                # Portões
                 for p_id in st.session_state.portas:
                     mui.Paper(
                         "PORTÃO",
@@ -72,16 +68,14 @@ with col_desenho:
                     )
 
 with col_dados:
-    st.subheader("📋 Quadro de Áreas") [cite: 70]
+    st.subheader("📋 Quadro de Áreas")
     
-    # Localiza os dados da construção para o cálculo
     info_c = next((item for item in st.session_state.layout if item["i"] == "construcao"), {"w": 0, "h": 0})
     
-    # Ajuste de escala (cada quadrado do grid = 10m2 na simulação)
     area_c = (info_c["w"] * info_c["h"]) * 10 
     
     df = pd.DataFrame({
-        "Descrição": ["Terreno", "Área Construída"], [cite: 71, 19]
+        "Descrição": ["Terreno", "Área Construída"],
         "Área (m²)": [f"{area_terreno:.2f}", f"{area_c:.2f}"]
     })
     st.table(df)
