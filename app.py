@@ -4,12 +4,12 @@ from streamlit_drawable_canvas import st_canvas
 
 st.set_page_config(layout="wide", page_title="Planta Interativa")
 
-st.title("🏗️ Planta Baixa - Clica, Arrasta e Gira")
+st.title("🏗️ Planta Baixa - Clica, Arrasta e Gira (Modo Ampliado)")
 
-# Escala: 1 metro = 15 pixels na tela
-ESCALA = 15 
+# --- O SEGREDO DO TAMANHO ESTÁ AQUI ---
+# Antes era 15. Agora 1 metro = 40 pixels na tela (Tudo fica quase 3x maior)
+ESCALA = 40 
 
-# Memória do app
 if 'dados_comodos' not in st.session_state:
     st.session_state.dados_comodos = []
 
@@ -18,10 +18,9 @@ if 'objetos_canvas' not in st.session_state:
         "type": "rect", "left": 10, "top": 10, 
         "width": 20 * ESCALA, "height": 30 * ESCALA,
         "fill": "transparent", "stroke": "black", 
-        "strokeWidth": 2, "strokeDashArray": [5, 5]
+        "strokeWidth": 3, "strokeDashArray": [10, 10]
     }]
 
-# --- MENU LATERAL ---
 with st.sidebar:
     st.header("1. Inserir Cômodo")
     nome = st.text_input("Nome do Setor", placeholder="Ex: Produção")
@@ -49,7 +48,6 @@ with st.sidebar:
 
     st.divider()
     
-    # --- MÓDULO DA PORTA ---
     st.header("2. Inserir Porta")
     larg_porta = st.number_input("Largura da Porta (m)", min_value=0.60, max_value=6.0, value=0.80, step=0.10)
     
@@ -62,11 +60,11 @@ with st.sidebar:
                 ["L", 0, -w_px], 
                 ["A", w_px, w_px, 0, 0, 1, w_px, 0]
             ],
-            "left": 100, 
-            "top": 100,
+            "left": 150, 
+            "top": 150,
             "fill": "transparent",
             "stroke": "#8B4513", 
-            "strokeWidth": 2,
+            "strokeWidth": 4, # Deixei a linha da porta mais grossa pra enxergar bem
             "opacity": 1.0
         }
         st.session_state.objetos_canvas.append(nova_porta)
@@ -83,7 +81,7 @@ with st.sidebar:
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st.info("🖱️ **Instruções:** Selecione um objeto e arraste. Puxe nas pontas para distorcer. Use a alça superior (bolinha solta) para girar a porta e colar na parede.")
+    st.info("🖱️ **Instruções:** Selecione um objeto e arraste. Tudo está em escala maior agora.")
     
     estado_inicial = {
         "version": "4.4.0",
@@ -93,11 +91,11 @@ with col1:
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=2,
-        background_color="#f0f0f0",
+        background_color="#e8e8e8",
         initial_drawing=estado_inicial,
         drawing_mode="transform", 
-        width=700,
-        height=600,
+        width=1000,   # AUMENTEI A LARGURA DA PRANCHETA
+        height=800,   # AUMENTEI A ALTURA DA PRANCHETA
         key="canvas",
     )
 
