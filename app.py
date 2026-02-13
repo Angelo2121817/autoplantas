@@ -1,127 +1,94 @@
 import streamlit as st
+import ezdxf
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import pandas as pd
-from fpdf import FPDF
 import io
 
-st.set_page_config(layout="wide", page_title="Planta Lego - CETESB")
+# Configuração da página pra não ficar com cara de site amador
+st.set_page_config(page_title="Gerador de Galpão do General", layout="wide")
 
-# Memória dos Blocos (Lego)
-if 'blocos' not in st.session_state:
-    st.session_state.blocos = []
+st.title("🏭 Gerador de Barracão Industrial - Padrão General")
+st.markdown("Bota as medidas aí e para de perder tempo desenhando linha por linha.")
 
-st.markdown("<h1 style='text-align: center;'>🏗️ Montador de Planta - Padrão CETESB</h1>", unsafe_allow_html=True)
-st.divider()
-
-col_painel, col_tela = st.columns([1, 3], gap="large")
-
-with col_painel:
-    st.markdown("### 🧱 Peças do Lego")
+# --- BARRA LATERAL (ENTRADA DE DADOS) ---
+with st.sidebar:
+    st.header("Dimensões do Monstro")
+    largura = st.number_input("Largura (m)", min_value=5.0, value=15.0, step=0.5)
+    comprimento = st.number_input("Comprimento (m)", min_value=5.0, value=30.0, step=0.5)
     
-    with st.form("form_bloco"):
-        nome = st.text_input("Nome do Cômodo", placeholder="Ex: Sala Amarração [cite: 113]")
-        c1, c2 = st.columns(2)
-        larg = c1.number_input("Largura (m) [X]", min_value=0.5, value=5.0, step=0.5)
-        comp = c2.number_input("Comprimento (m) [Y]", min_value=0.5, value=5.0, step=0.5)
-        
-        st.markdown("**Posição no Terreno (Onde encaixar):**")
-        p1, p2 = st.columns(2)
-        pos_x = p1.number_input("Distância da Esquerda", value=0.0, step=0.5)
-        pos_y = p2.number_input("Distância do Fundo", value=0.0, step=0.5)
-        
-        add_btn = st.form_submit_button("➕ Encaixar Bloco")
-        
-        if add_btn and nome:
-            st.session_state.blocos.append({
-                "Nome": nome, "W": larg, "H": comp, "X": pos_x, "Y": pos_y, "Area": larg * comp
-            })
-            st.rerun()
-
-    st.markdown("### 📋 Quadro de Áreas: $m^{2}$ [cite: 134]")
-    if st.session_state.blocos:
-        df = pd.DataFrame(st.session_state.blocos)[["Nome", "Area"]]
-        st.dataframe(df, hide_index=True, use_container_width=True)
-        area_total = df["Area"].sum()
-        st.success(f"**CONSTRUÍDA {area_total:.2f} [cite: 137]**")
-    else:
-        st.info("Nenhum bloco encaixado.")
-        area_total = 0
-
-    if st.button("🗑️ Demolir Tudo", use_container_width=True):
-        st.session_state.blocos = []
-        st.rerun()
-
-with col_tela:
-    # A Mágica do Acabamento Automático
-    fig, ax = plt.subplots(figsize=(10, 14)) # Proporção retrato parecida com seu PDF
+    st.header("Estrutura")
+    distancia_pilares = st.number_input("Distância entre Pilares (m)", min_value=3.0, value=5.0, step=0.5)
     
-    # Se não tiver blocos, desenha um grid vazio de referência
-    if not st.session_state.blocos:
-        ax.set_xlim(0, 20)
-        ax.set_ylim(0, 30)
-        ax.text(10, 15, "Adicione blocos na lateral...", ha='center', color='gray')
-    else:
-        # Pega os limites máximos pra ajustar a câmera automaticamente
-        max_x = max([b["X"] + b["W"] for b in st.session_state.blocos]) + 2
-        max_y = max([b["Y"] + b["H"] for b in st.session_state.blocos]) + 2
-        ax.set_xlim(-1, max_x)
-        ax.set_ylim(-1, max_y)
-        
-        # Desenha cada bloco de Lego
-        for b in st.session_state.blocos:
-            # Retângulo com linha grossa (imita parede)
-            rect = patches.Rectangle(
-                (b["X"], b["Y"]), b["W"], b["H"], 
-                linewidth=2.5, edgecolor='black', facecolor='white', zorder=2
-            )
-            ax.add_patch(rect)
-            
-            # Texto no meio exato do bloco igual no seu PDF
-            texto = f"{b['Nome']}\nArea {b['Area']:.2f}m2"
-            ax.text(
-                b["X"] + b["W"]/2, b["Y"] + b["H"]/2, texto, 
-                ha='center', va='center', fontsize=10, 
-                fontweight='bold', color='black', zorder=3
-            )
+    nome_arquivo = st.text_input("Nome do Arquivo", value="Projeto_Barracao.dxf")
 
-    ax.set_aspect('equal')
-    plt.axis('off') # Tira as bordas feias do gráfico
+# --- FUNÇÃO QUE GERA O DXF ---
+def gerar_dxf(larg, comp, dist_pilares):
+    doc = ezdxf.new('R2010')
+    msp = doc.modelspace()
+    
+    # Camadas
+    doc.layers.new(name='PAREDES', dxfattribs={'color': 7})
+    doc.layers.new(name='PILARES', dxfattribs={'color': 1}) # Vermelho
+
+    # 1. Desenha o Retângulo Externo (Paredes)
+    pontos_parede = [(0, 0), (larg, 0), (larg, comp), (0, comp), (0, 0)]
+    msp.add_lwpolyline(pontos_parede, dxfattribs={'layer': 'PAREDES'})
+
+    # 2. Desenha os Pilares (Calcula quantos cabem)
+    num_pilares_lado = int(comp / dist_pilares) + 1
+    tamanho_pilar = 0.40 # 40cm de pilar, padrãozão
+    
+    # Pilares da esquerda e direita
+    for i in range(num_pilares_lado):
+        y = i * dist_pilares
+        if y > comp: break # Proteção pra não desenhar fora
+        
+        # Pilar Esquerda
+        msp.add_lwpolyline([(0, y), (tamanho_pilar, y), (tamanho_pilar, y+tamanho_pilar), (0, y+tamanho_pilar), (0, y)], dxfattribs={'layer': 'PILARES'})
+        
+        # Pilar Direita
+        msp.add_lwpolyline([(larg-tamanho_pilar, y), (larg, y), (larg, y+tamanho_pilar), (larg-tamanho_pilar, y+tamanho_pilar), (larg-tamanho_pilar, y)], dxfattribs={'layer': 'PILARES'})
+
+    # Retorna o arquivo na memória (buffer)
+    output = io.StringIO()
+    doc.write(output)
+    return output.getvalue()
+
+# --- FUNÇÃO DO PREVIEW (VISUALIZAÇÃO NA TELA) ---
+def plotar_preview(larg, comp):
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Desenha o retângulo
+    rect = plt.Rectangle((0, 0), larg, comp, fill=False, color='black', linewidth=2)
+    ax.add_patch(rect)
+    
+    # Ajusta os limites do gráfico pra ficar proporcional
+    ax.set_xlim(-5, larg + 5)
+    ax.set_ylim(-5, comp + 5)
+    ax.set_aspect('equal', adjustable='box')
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_title(f"Preview: {larg}m x {comp}m")
+    
+    return fig
+
+# --- A MÁGICA ACONTECE AQUI ---
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("👀 Olhada Rápida")
+    fig = plotar_preview(largura, comprimento)
     st.pyplot(fig)
 
-st.divider()
-
-# --- Módulo PDF Faca na Caveira ---
-if st.session_state.blocos:
-    # Salva o gráfico em memória pra jogar no PDF
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
+with col2:
+    st.subheader("💾 Baixar Planta")
+    st.write("Se gostou do desenho, baixa logo essa porcaria.")
     
-    pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.add_page()
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, "PLANTA BAIXA - LAYOUT CETESB", ln=True, align="C")
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, "Proprietária: Priscila", ln=True, align="C")
-    pdf.cell(0, 6, "Resp. Técnico: General", ln=True, align="C")
-    pdf.line(10, 30, 200, 30)
+    # Gera o DXF na memória
+    dxf_data = gerar_dxf(largura, comprimento, distancia_pilares)
     
-    # Cola a imagem do gráfico no PDF
-    # Tratando arquivo em memória com arquivo temporário seguro
-    with open("planta_temp.png", "wb") as f:
-        f.write(buf.getvalue())
-    
-    pdf.image("planta_temp.png", x=15, y=35, w=180)
-    
-    # Roda o PDF
-    pdf.output("Planta_CETESB_Final.pdf")
-    
-    with open("Planta_CETESB_Final.pdf", "rb") as f:
-        st.download_button(
-            label="📄 Gerar e Baixar PDF Oficial", 
-            data=f, 
-            file_name="Planta_CETESB_Final.pdf", 
-            mime="application/pdf",
-            type="primary",
-            use_container_width=True
-        )
+    # Botão de Download
+    st.download_button(
+        label="BAIXAR ARQUIVO .DXF",
+        data=dxf_data,
+        file_name=nome_arquivo if nome_arquivo.endswith('.dxf') else f"{nome_arquivo}.dxf",
+        mime="application/dxf"
+    )
