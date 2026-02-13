@@ -49,15 +49,38 @@ with st.sidebar:
             }
             st.session_state.objetos_canvas.append(novo_bloco)
             st.rerun()
-
+st.divider()
+    st.header("2. Inserir Porta")
+    larg_porta = st.number_input("Largura da Porta (m)", min_value=0.60, max_value=6.0, value=0.80, step=0.10)
+    
+    if st.button("🚪 Adicionar Porta"):
+        w_px = larg_porta * ESCALA
+        
+        # O "path" no Canvas desenha a porta técnica:
+        # M = Ponto inicial (Dobradiça)
+        # L = Linha reta (A folha da porta em si)
+        # A = Arco (O percurso do giro no chão)
+        nova_porta = {
+            "type": "path",
+            "path": [
+                ["M", 0, 0], 
+                ["L", 0, -w_px], 
+                ["A", w_px, w_px, 0, 0, 1, w_px, 0]
+            ],
+            "left": 100, 
+            "top": 100, # Nasce no meio da tela pra você pegar
+            "fill": "transparent",
+            "stroke": "#8B4513", # Marrom escuro
+            "strokeWidth": 2,
+            "opacity": 1.0
+        }
+        st.session_state.objetos_canvas.append(nova_porta)
+        st.rerun()
     if st.button("🗑️ Resetar Tudo"):
         st.session_state.dados_comodos = []
-        st.session_state.objetos_canvas.append(novo_bloco)
-            st.rerun()
+        st.session_state.objetos_canvas = st.session_state.objetos_canvas[:1] # Mantém só o terreno
+        st.rerun()
 
-    # <<< É AQUI QUE VAMOS INJETAR O MÓDULO DA PORTA >>>
-
-    if st.button("🗑️ Resetar Tudo"):
 col1, col2 = st.columns([3, 1])
 
 with col1:
