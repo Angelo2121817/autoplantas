@@ -28,7 +28,7 @@ mode_map = {
 tool = mode_map[modo_ferramenta]
 
 # Cor do preenchimento pra facilitar a visão
-fill_color = st.sidebar.color_picker("Cor do Bloco", "#00FFAA55")
+fill_color = st.sidebar.color_picker("Cor do Bloco", "#00FFAA")
 
 # --- ÁREA DE DESENHO (CANVAS) ---
 st.subheader("Área de Projeto")
