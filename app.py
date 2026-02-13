@@ -52,9 +52,12 @@ with st.sidebar:
 
     if st.button("🗑️ Resetar Tudo"):
         st.session_state.dados_comodos = []
-        st.session_state.objetos_canvas = st.session_state.objetos_canvas[:1] # Mantém só o terreno
-        st.rerun()
+        st.session_state.objetos_canvas.append(novo_bloco)
+            st.rerun()
 
+    # <<< É AQUI QUE VAMOS INJETAR O MÓDULO DA PORTA >>>
+
+    if st.button("🗑️ Resetar Tudo"):
 col1, col2 = st.columns([3, 1])
 
 with col1:
