@@ -1,121 +1,126 @@
 import streamlit as st
+from streamlit_drawable_canvas import st_canvas
 import ezdxf
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+import pandas as pd
 import io
 
-# --- CONFIGURAÇÃO INICIAL ---
-st.set_page_config(page_title="Gerador de Galpão PRO", layout="wide")
-st.title("🏭 Gerador de Layout Industrial - Modo General")
+# --- CONFIGURAÇÃO ---
+st.set_page_config(page_title="Layout Industrial Visual", layout="wide")
+st.title("🏭 General CAD: O Arrasta-e-Solta")
 
-# --- INICIALIZAR MEMÓRIA (SESSION STATE) ---
-# É aqui que a mágica acontece: o site "lembra" o que você adicionou
-if 'comodos' not in st.session_state:
-    st.session_state['comodos'] = []
+# --- BARRA LATERAL: CONFIGURAÇÕES DO GALPÃO ---
+st.sidebar.header("1. Tamanho do Galpão (Metros)")
+largura_real = st.sidebar.number_input("Largura (m)", 10.0, 100.0, 20.0)
+comprimento_real = st.sidebar.number_input("Comprimento (m)", 10.0, 100.0, 30.0)
 
-# --- FUNÇÕES DE DESENHO ---
-def gerar_dxf_completo(larg_total, comp_total, lista_comodos):
-    doc = ezdxf.new('R2010')
-    msp = doc.modelspace()
-    
-    # Criar Camadas (Layers)
-    doc.layers.new(name='ESTRUTURA_EXTERNA', dxfattribs={'color': 7}) # Branco
-    doc.layers.new(name='PAREDES_INTERNAS', dxfattribs={'color': 6}) # Magenta
-    doc.layers.new(name='TEXTOS', dxfattribs={'color': 2}) # Amarelo
+st.sidebar.markdown("---")
+st.sidebar.header("2. Ferramentas")
+# O segredo tá aqui: Transform permite mover os quadrados
+modo_ferramenta = st.sidebar.radio("O que você quer fazer?", 
+    ("Desenhar Quadrado (rect)", "Mover/Editar (transform)", "Apagar (delete)"))
 
-    # 1. Desenha o Galpão Principal
-    pontos_externos = [(0, 0), (larg_total, 0), (larg_total, comp_total), (0, comp_total), (0, 0)]
-    msp.add_lwpolyline(pontos_externos, dxfattribs={'layer': 'ESTRUTURA_EXTERNA'})
+# Mapeando o nome bonito pro nome técnico da lib
+mode_map = {
+    "Desenhar Quadrado (rect)": "rect",
+    "Mover/Editar (transform)": "transform",
+    "Apagar (delete)": "freedraw" # Delete funciona selecionando e apertando Del no teclado na vdd
+}
+tool = mode_map[modo_ferramenta]
 
-    # 2. Desenha os Cômodos (A MÁGICA)
-    for item in lista_comodos:
-        x, y = item['x'], item['y']
-        l, c = item['largura'], item['comprimento']
-        nome = item['nome']
+# Cor do preenchimento pra facilitar a visão
+fill_color = st.sidebar.color_picker("Cor do Bloco", "#00FFAA55")
+
+# --- ÁREA DE DESENHO (CANVAS) ---
+st.subheader("Área de Projeto")
+st.info("💡 Dica: Selecione 'Desenhar' para criar salas. Depois mude para 'Mover' para arrastar elas.")
+
+# Definindo a escala: Vamos fixar a largura da tela em 800 pixels
+LARGURA_CANVAS_PX = 800
+# Calcula a altura proporcional pra não distorcer o galpão
+escala_px_por_metro = LARGURA_CANVAS_PX / largura_real
+ALTURA_CANVAS_PX = int(comprimento_real * escala_px_por_metro)
+
+# O Canvas Mágico
+canvas_result = st_canvas(
+    fill_color=fill_color,
+    stroke_width=2,
+    stroke_color="#000000",
+    background_color="#eeeeee", # Cinza claro pra simular o chão
+    height=ALTURA_CANVAS_PX,
+    width=LARGURA_CANVAS_PX,
+    drawing_mode=tool,
+    key="canvas_galpao",
+    display_toolbar=True, # Mostra barra de ferramentas extra
+)
+
+# --- PROCESSAMENTO DOS DADOS ---
+if canvas_result.json_data is not None:
+    objetos = canvas_result.json_data["objects"]
+    df = pd.json_normalize(objetos) # Transforma o JSON em tabela pra gente ler
+
+    # Se tiver algum desenho lá dentro...
+    if not df.empty:
+        st.write("📋 **Lista de Blocos Detectados:**")
         
-        # Desenha as paredes do cômodo
-        pontos_interno = [(x, y), (x+l, y), (x+l, y+c), (x, y+c), (x, y)]
-        msp.add_lwpolyline(pontos_interno, dxfattribs={'layer': 'PAREDES_INTERNAS'})
+        # Filtra só o que interessa
+        blocos = []
+        for index, row in df.iterrows():
+            if row['type'] == 'rect':
+                # CONVERSÃO CRÍTICA: PIXEL -> METROS
+                # O Y no Canvas cresce pra baixo, no CAD cresce pra cima. Tem que inverter.
+                
+                x_metros = row['left'] / escala_px_por_metro
+                # Invertendo o eixo Y
+                y_canvas_invertido = ALTURA_CANVAS_PX - (row['top'] + row['height'])
+                y_metros = y_canvas_invertido / escala_px_por_metro
+                
+                w_metros = row['width'] / escala_px_por_metro
+                h_metros = row['height'] / escala_px_por_metro
+                
+                blocos.append({
+                    'x': x_metros, 'y': y_metros, 
+                    'l': w_metros, 'h': h_metros
+                })
+                
+        st.dataframe(pd.DataFrame(blocos)) # Mostra a tabelinha pro General conferir
+
+        # --- BOTÃO DE EXPORTAR DXF ---
+        def gerar_dxf_visual():
+            doc = ezdxf.new('R2010')
+            msp = doc.modelspace()
+            
+            # Layer do Galpão
+            doc.layers.new(name='GALPAO', dxfattribs={'color': 7})
+            doc.layers.new(name='COMODOS', dxfattribs={'color': 4}) # Ciano
+
+            # Desenha o contorno do galpão
+            msp.add_lwpolyline([(0, 0), (largura_real, 0), (largura_real, comprimento_real), (0, comprimento_real), (0, 0)], dxfattribs={'layer': 'GALPAO'})
+
+            # Desenha os blocos que você arrastou
+            for b in blocos:
+                # ezdxf desenha polilinha fechada
+                pontos = [
+                    (b['x'], b['y']),
+                    (b['x'] + b['l'], b['y']),
+                    (b['x'] + b['l'], b['y'] + b['h']),
+                    (b['x'], b['y'] + b['h']),
+                    (b['x'], b['y'])
+                ]
+                msp.add_lwpolyline(pontos, dxfattribs={'layer': 'COMODOS'})
+                
+                # Texto de cota
+                texto = f"{b['l']:.1f}x{b['h']:.1f}m"
+                msp.add_text(texto, dxfattribs={'height': 0.3, 'layer': 'COMODOS'}).set_pos((b['x'], b['y']+b['h']+0.1))
+
+            output = io.StringIO()
+            doc.write(output)
+            return output.getvalue()
+
+        dxf_data = gerar_dxf_visual()
         
-        # Escreve o nome no meio do cômodo automaticamente
-        msp.add_text(nome, dxfattribs={'layer': 'TEXTOS', 'height': 0.3}).set_pos((x + l/2, y + c/2), align='MIDDLE_CENTER')
-
-    # Retorna o arquivo
-    output = io.StringIO()
-    doc.write(output)
-    return output.getvalue()
-
-def plotar_preview_interativo(larg_total, comp_total, lista_comodos):
-    fig, ax = plt.subplots(figsize=(10, 8))
-    
-    # Galpão Principal (Cinza Claro)
-    rect_main = patches.Rectangle((0, 0), larg_total, comp_total, linewidth=3, edgecolor='black', facecolor='#f0f0f0')
-    ax.add_patch(rect_main)
-    
-    # Desenha os Cômodos
-    for item in lista_comodos:
-        rect = patches.Rectangle((item['x'], item['y']), item['largura'], item['comprimento'], 
-                                 linewidth=2, edgecolor='blue', facecolor='#a0cbe8', alpha=0.5)
-        ax.add_patch(rect)
-        # Texto no centro
-        ax.text(item['x'] + item['largura']/2, item['y'] + item['comprimento']/2, item['nome'], 
-                ha='center', va='center', fontsize=9, color='darkblue', weight='bold')
-
-    ax.set_xlim(-2, larg_total + 2)
-    ax.set_ylim(-2, comp_total + 2)
-    ax.set_aspect('equal')
-    ax.grid(True, linestyle='--', alpha=0.3)
-    return fig
-
-# --- INTERFACE DO USUÁRIO ---
-col_config, col_preview = st.columns([1, 2])
-
-with col_config:
-    st.header("1. O Galpão")
-    largura = st.number_input("Largura Total (m)", 10.0, 100.0, 15.0)
-    comprimento = st.number_input("Comprimento Total (m)", 10.0, 100.0, 30.0)
-    
-    st.divider()
-    
-    st.header("2. Adicionar Blocos")
-    tipo_comodo = st.selectbox("O que vamos construir?", ["Escritório", "Banheiro", "Almoxarifado", "Produção", "Refeitório"])
-    
-    c1, c2 = st.columns(2)
-    w_comodo = c1.number_input("Largura Cômodo", 1.0, 20.0, 3.0)
-    h_comodo = c2.number_input("Comp. Cômodo", 1.0, 20.0, 3.0)
-    
-    st.info("Onde vai ficar? (Canto inferior esquerdo é o 0,0)")
-    c3, c4 = st.columns(2)
-    pos_x = c3.number_input("Posição X", 0.0, largura, 0.0)
-    pos_y = c4.number_input("Posição Y", 0.0, comprimento, 0.0)
-    
-    if st.button("➕ Adicionar Bloco na Planta"):
-        novo_comodo = {
-            'nome': tipo_comodo,
-            'largura': w_comodo,
-            'comprimento': h_comodo,
-            'x': pos_x,
-            'y': pos_y
-        }
-        st.session_state['comodos'].append(novo_comodo)
-        st.success(f"{tipo_comodo} adicionado!")
-
-    if st.button("🗑️ Limpar Tudo (Resetar)"):
-        st.session_state['comodos'] = []
-        st.rerun()
-
-with col_preview:
-    st.subheader("👀 Planta Baixa em Tempo Real")
-    fig = plotar_preview_interativo(largura, comprimento, st.session_state['comodos'])
-    st.pyplot(fig)
-    
-    st.divider()
-    
-    # Botão de Download
-    dxf_bytes = gerar_dxf_completo(largura, comprimento, st.session_state['comodos'])
-    st.download_button(
-        label="📥 BAIXAR PROJETO PARA COREL (.DXF)",
-        data=dxf_bytes,
-        file_name="planta_industrial_general.dxf",
-        mime="application/dxf"
-    )
+        st.download_button(
+            label="💾 Baixar DXF do Layout Atual",
+            data=dxf_data,
+            file_name="layout_visual.dxf",
+            mime="application/dxf"
+        )
