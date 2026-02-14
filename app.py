@@ -115,47 +115,105 @@ def drawing_para_comodos(drawing, largura_m, comprimento_m, comodos, px_por_m, s
 # =========================
 # DXF (exportação)
 # =========================
-def gerar_dxf(larg_m, comp_m, lista_comodos):
+import math
+import ezdxf
+import io
+
+def gerar_dxf(larg_m, comp_m, lista_comodos, esp_parede_m=0.15):
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
 
     # Layers
     if "ESTRUTURA_EXTERNA" not in doc.layers:
         doc.layers.new(name="ESTRUTURA_EXTERNA", dxfattribs={"color": 7})
-    if "PAREDES_INTERNAS" not in doc.layers:
-        doc.layers.new(name="PAREDES_INTERNAS", dxfattribs={"color": 6})
+    if "PAREDES" not in doc.layers:
+        doc.layers.new(name="PAREDES", dxfattribs={"color": 6})
     if "TEXTOS" not in doc.layers:
         doc.layers.new(name="TEXTOS", dxfattribs={"color": 2})
 
-    # Contorno
+    # Contorno do terreno/galpão
     pts = [(0, 0), (larg_m, 0), (larg_m, comp_m), (0, comp_m), (0, 0)]
     msp.add_lwpolyline(pts, dxfattribs={"layer": "ESTRUTURA_EXTERNA"})
 
+    # --- util: normalizar segmento (evita problemas de float) ---
+    def q(v, nd=4):
+        # arredonda em metros: nd=4 -> 0,1 mm
+        return round(float(v), nd)
+
+    def seg_key(p1, p2):
+        x1, y1 = q(p1[0]), q(p1[1])
+        x2, y2 = q(p2[0]), q(p2[1])
+        # ordena para a mesma parede ter a mesma chave independentemente do sentido
+        if (x2, y2) < (x1, y1):
+            x1, y1, x2, y2 = x2, y2, x1, y1
+        return (x1, y1, x2, y2)
+
+    # --- coletar segmentos das paredes (retângulos dos cômodos) ---
+    # count==2 -> parede compartilhada; vamos desenhar só uma vez
+    segs = {}  # key -> {"p1":(x1,y1),"p2":(x2,y2),"count":n}
+    textos = []  # para texto central
+
     for c in lista_comodos:
-        x, y = c["x"], c["y"]
-        w, h = c["largura"], c["comprimento"]
-        nome = c.get("nome", c.get("tipo", "Bloco"))
+        x, y = float(c["x"]), float(c["y"])
+        w, h = float(c["largura"]), float(c["comprimento"])
+        nome = c.get("nome", "Bloco")
 
-        # Retângulo do cômodo
-        pts_i = [(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]
-        msp.add_lwpolyline(pts_i, dxfattribs={"layer": "PAREDES_INTERNAS"})
+        pA = (x, y)
+        pB = (x + w, y)
+        pC = (x + w, y + h)
+        pD = (x, y + h)
 
-        # Texto centralizado
-        cx, cy = (x + w / 2), (y + h / 2)
+        lados = [(pA, pB), (pB, pC), (pC, pD), (pD, pA)]
+        for p1, p2 in lados:
+            k = seg_key(p1, p2)
+            if k not in segs:
+                segs[k] = {"p1": (k[0], k[1]), "p2": (k[2], k[3]), "count": 1}
+            else:
+                segs[k]["count"] += 1
+
+        textos.append((nome, x + w/2, y + h/2))
+
+    # --- desenhar parede dupla para cada segmento único ---
+    t = float(esp_parede_m)
+    off = t / 2.0
+
+    def draw_double_wall(p1, p2):
+        x1, y1 = p1
+        x2, y2 = p2
+
+        # segmento horizontal
+        if math.isclose(y1, y2, abs_tol=1e-9):
+            y = y1
+            msp.add_line((x1, y + off), (x2, y + off), dxfattribs={"layer": "PAREDES"})
+            msp.add_line((x1, y - off), (x2, y - off), dxfattribs={"layer": "PAREDES"})
+            return
+
+        # segmento vertical
+        if math.isclose(x1, x2, abs_tol=1e-9):
+            x = x1
+            msp.add_line((x + off, y1), (x + off, y2), dxfattribs={"layer": "PAREDES"})
+            msp.add_line((x - off, y1), (x - off, y2), dxfattribs={"layer": "PAREDES"})
+            return
+
+        # se aparecer diagonal (não deveria com seus retângulos), fallback: desenha linha simples
+        msp.add_line((x1, y1), (x2, y2), dxfattribs={"layer": "PAREDES"})
+
+    # desenha cada parede apenas uma vez (mesmo que compartilhada)
+    for item in segs.values():
+        draw_double_wall(item["p1"], item["p2"])
+
+    # textos (opcional)
+    for nome, cx, cy in textos:
         txt = msp.add_text(nome, dxfattribs={"layer": "TEXTOS", "height": 0.30})
-
-        if TEA is not None:
-            # ezdxf novo: exige enum
+        # compat com versões novas (enum) e antigas (string)
+        try:
+            from ezdxf.enums import TextEntityAlignment as TEA
             txt.set_placement((cx, cy), align=TEA.MIDDLE_CENTER)
-        else:
-            # fallback para versões antigas: set_pos aceita string
+        except Exception:
             try:
                 txt.set_pos((cx, cy), align="MIDDLE_CENTER")
             except Exception:
-                # último fallback: inserção e flags (sem garantia de centralização perfeita em todas versões)
                 txt.dxf.insert = (cx, cy)
-                txt.dxf.halign = 1
-                txt.dxf.valign = 1
 
     buff = io.StringIO()
     doc.write(buff)
