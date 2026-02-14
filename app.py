@@ -1,16 +1,19 @@
 import streamlit as st
 import ezdxf
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import io
-
 from streamlit_drawable_canvas import st_canvas
-from ezdxf.enums import TextEntityAlignment
 
-# ---------------------------
-# DXF (corrigido)
-# ---------------------------
-def gerar_dxf_completo(larg_total, comp_total, lista_comodos):
+st.set_page_config(page_title="AutoPlantas", layout="wide")
+
+# ---------- Estado ----------
+if "comodos" not in st.session_state:
+    st.session_state.comodos = []  # cada item: {id, nome, x, y, largura, comprimento}
+
+if "px_por_m" not in st.session_state:
+    st.session_state.px_por_m = 40  # escala base
+
+# ---------- DXF ----------
+def gerar_dxf(larg_m, comp_m, lista_comodos):
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
 
@@ -18,146 +21,130 @@ def gerar_dxf_completo(larg_total, comp_total, lista_comodos):
     doc.layers.new(name="PAREDES_INTERNAS", dxfattribs={"color": 6})
     doc.layers.new(name="TEXTOS", dxfattribs={"color": 2})
 
-    pontos_externos = [(0, 0), (larg_total, 0), (larg_total, comp_total), (0, comp_total), (0, 0)]
-    msp.add_lwpolyline(pontos_externos, dxfattribs={"layer": "ESTRUTURA_EXTERNA"})
+    # contorno
+    pts = [(0, 0), (larg_m, 0), (larg_m, comp_m), (0, comp_m), (0, 0)]
+    msp.add_lwpolyline(pts, dxfattribs={"layer": "ESTRUTURA_EXTERNA"})
 
-    for item in lista_comodos:
-        x, y = item["x"], item["y"]
-        l, c = item["largura"], item["comprimento"]
-        nome = item["nome"]
+    for c in lista_comodos:
+        x, y = c["x"], c["y"]
+        w, h = c["largura"], c["comprimento"]
+        nome = c["nome"]
 
-        pontos_interno = [(x, y), (x + l, y), (x + l, y + c), (x, y + c), (x, y)]
-        msp.add_lwpolyline(pontos_interno, dxfattribs={"layer": "PAREDES_INTERNAS"})
+        pts_i = [(x, y), (x+w, y), (x+w, y+h), (x, y+h), (x, y)]
+        msp.add_lwpolyline(pts_i, dxfattribs={"layer": "PAREDES_INTERNAS"})
 
-       txt = msp.add_text(nome, dxfattribs={'layer': 'TEXTOS', 'height': 0.3})
-txt.set_placement((x + l/2, y + c/2), align="MIDDLE_CENTER")
+        txt = msp.add_text(nome, dxfattribs={"layer": "TEXTOS", "height": 0.30})
+        txt.set_placement((x + w/2, y + h/2), align="MIDDLE_CENTER")
 
-    output = io.StringIO()
-    doc.write(output)
-    return output.getvalue()
+    buff = io.StringIO()
+    doc.write(buff)
+    return buff.getvalue()
 
-# ---------------------------
-# Conversões px <-> m
-# ---------------------------
-def m_para_px(valor_m, escala_px_por_m):
-    return valor_m * escala_px_por_m
+# ---------- UI ----------
+col_left, col_right = st.columns([1, 2])
 
-def px_para_m(valor_px, escala_px_por_m):
-    return valor_px / escala_px_por_m
+with col_left:
+    st.header("Terreno / Construção")
 
-# ---------------------------
-# Streamlit
-# ---------------------------
-st.set_page_config(page_title="AutoPlantas", layout="wide")
-st.title("AutoPlantas — blocos arrastáveis")
-
-if "comodos" not in st.session_state:
-    st.session_state["comodos"] = []
-
-col_config, col_canvas = st.columns([1, 2])
-
-with col_config:
-    st.header("Terreno / Galpão")
-    largura_m = st.number_input("Largura total (m)", 10.0, 200.0, 15.0)
-    comprimento_m = st.number_input("Comprimento total (m)", 10.0, 200.0, 30.0)
+    largura_m = st.number_input("Largura (m)", 5.0, 200.0, 15.0)
+    comprimento_m = st.number_input("Comprimento (m)", 5.0, 200.0, 30.0)
+    st.session_state.px_por_m = st.slider("Escala (px por metro)", 10, 100, st.session_state.px_por_m)
 
     st.divider()
-    st.header("Escala")
-    escala_px_por_m = st.slider("px por metro", 10, 200, 50)
+    st.header("Adicionar bloco")
 
-    st.divider()
-    st.header("Adicionar bloco (entra no canvas)")
-    tipo = st.selectbox("Tipo", ["Escritório", "Banheiro", "Almoxarifado", "Produção", "Refeitório"])
+    nome = st.selectbox("Tipo", ["Escritório", "Banheiro", "Almoxarifado", "Produção", "Refeitório"])
     c1, c2 = st.columns(2)
-    w_m = c1.number_input("Largura (m)", 1.0, 50.0, 3.0)
-    h_m = c2.number_input("Comprimento (m)", 1.0, 50.0, 3.0)
+    w_m = c1.number_input("Largura (m)", 0.5, 50.0, 3.0, key="w_m")
+    h_m = c2.number_input("Comprimento (m)", 0.5, 50.0, 3.0, key="h_m")
 
-    if st.button("➕ Adicionar bloco"):
-        st.session_state["comodos"].append({
-            "nome": tipo,
-            "largura": w_m,
-            "comprimento": h_m,
+    if st.button("Adicionar"):
+        st.session_state.comodos.append({
+            "id": f"c{len(st.session_state.comodos)+1}",
+            "nome": nome,
             "x": 0.0,
-            "y": 0.0
+            "y": 0.0,
+            "largura": float(w_m),
+            "comprimento": float(h_m),
         })
         st.rerun()
 
-    if st.button("🗑️ Limpar tudo"):
-        st.session_state["comodos"] = []
+    if st.button("Limpar tudo"):
+        st.session_state.comodos = []
         st.rerun()
 
-with col_canvas:
-    st.subheader("Arraste os blocos no canvas")
+with col_right:
+    st.subheader("Editor (arrastar / redimensionar)")
 
-    # tamanho do canvas em px baseado no galpão em metros
-    canvas_w = int(m_para_px(largura_m, escala_px_por_m))
-    canvas_h = int(m_para_px(comprimento_m, escala_px_por_m))
+    px_por_m = st.session_state.px_por_m
+    canvas_w = int(largura_m * px_por_m)
+    canvas_h = int(comprimento_m * px_por_m)
 
-    # monta objetos iniciais para o canvas
-    initial_objects = []
-    for i, c in enumerate(st.session_state["comodos"]):
-        initial_objects.append({
+    # Monte o "initial_drawing" com os retângulos existentes
+    # Observação: Fabric usa top/left em px; aqui fazemos (x,y) em m -> px
+    objects = []
+    for c in st.session_state.comodos:
+        objects.append({
             "type": "rect",
-            "left": m_para_px(c["x"], escala_px_por_m),
-            "top": m_para_px(c["y"], escala_px_por_m),
-            "width": m_para_px(c["largura"], escala_px_por_m),
-            "height": m_para_px(c["comprimento"], escala_px_por_m),
+            "left": c["x"] * px_por_m,
+            "top": (comprimento_m - (c["y"] + c["comprimento"])) * px_por_m,  # invertendo Y p/ ficar “planta”
+            "width": c["largura"] * px_por_m,
+            "height": c["comprimento"] * px_por_m,
             "fill": "rgba(160,203,232,0.5)",
             "stroke": "blue",
             "strokeWidth": 2,
-            "name": c["nome"],  # metadado
-            "object_id": i      # id pra mapear de volta
+            "objectCaching": False,
+            "name": c["id"],  # vamos usar isso pra mapear de volta
         })
 
-    # desenha o canvas
+    initial_drawing = {"version": "4.4.0", "objects": objects}
+
+    # Importante para parar o "pisca": key fixa + não recriar key com dimensões
     canvas_result = st_canvas(
-        fill_color="rgba(0, 0, 0, 0)",
+        fill_color="rgba(0,0,0,0)",
         stroke_width=2,
         stroke_color="blue",
         background_color="#f0f0f0",
         width=canvas_w,
         height=canvas_h,
-        drawing_mode="transform",  # permite mover/redimensionar
-        initial_drawing={"version": "4.4.0", "objects": initial_objects},
-        key="canvas_planta",
+        drawing_mode="transform",   # mover/resize
+        initial_drawing=initial_drawing,
         update_streamlit=True,
+        key="planta_canvas",
     )
 
-    # Atualiza session_state com base no JSON do canvas (posições em px)
+    # Sincronizar posições do canvas -> session_state
     if canvas_result.json_data and "objects" in canvas_result.json_data:
-        objs = canvas_result.json_data["objects"]
-        # reconstrói comodos mantendo larg/comp e atualizando x,y
-        novos = []
-        for obj in objs:
-            if obj.get("type") != "rect":
-                continue
-            nome = obj.get("name", "Bloco")
-            x_m = px_para_m(obj.get("left", 0), escala_px_por_m)
-            y_m = px_para_m(obj.get("top", 0), escala_px_por_m)
-            w_m2 = px_para_m(obj.get("width", 0) * obj.get("scaleX", 1), escala_px_por_m)
-            h_m2 = px_para_m(obj.get("height", 0) * obj.get("scaleY", 1), escala_px_por_m)
+        # Atualiza com base nos objetos atuais
+        by_id = {c["id"]: c for c in st.session_state.comodos}
 
-            # opcional: clamp dentro do terreno
-            x_m = max(0.0, min(x_m, largura_m - w_m2))
-            y_m = max(0.0, min(y_m, comprimento_m - h_m2))
+        for obj in canvas_result.json_data["objects"]:
+            cid = obj.get("name")
+            if cid in by_id:
+                left_px = float(obj.get("left", 0))
+                top_px = float(obj.get("top", 0))
+                w_px = float(obj.get("width", 0)) * float(obj.get("scaleX", 1))
+                h_px = float(obj.get("height", 0)) * float(obj.get("scaleY", 1))
 
-            novos.append({
-                "nome": nome,
-                "x": x_m,
-                "y": y_m,
-                "largura": w_m2,
-                "comprimento": h_m2,
-            })
+                # px -> m
+                w_m_new = w_px / px_por_m
+                h_m_new = h_px / px_por_m
 
-        st.session_state["comodos"] = novos
+                # desfaz inversão do Y
+                x_m_new = left_px / px_por_m
+                y_m_new = (comprimento_m * px_por_m - (top_px + h_px)) / px_por_m
+
+                by_id[cid]["x"] = max(0.0, x_m_new)
+                by_id[cid]["y"] = max(0.0, y_m_new)
+                by_id[cid]["largura"] = max(0.1, w_m_new)
+                by_id[cid]["comprimento"] = max(0.1, h_m_new)
 
     st.divider()
 
-    # download DXF com os blocos arrastados
-    dxf_text = gerar_dxf_completo(largura_m, comprimento_m, st.session_state["comodos"])
+    dxf_text = gerar_dxf(largura_m, comprimento_m, st.session_state.comodos)
     st.download_button(
-        "📥 Baixar DXF",
+        "Baixar DXF",
         data=dxf_text,
         file_name="planta.dxf",
-        mime="application/dxf"
+        mime="application/dxf",
     )
