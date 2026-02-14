@@ -131,9 +131,10 @@ def sync_comodos_from_canvas(drawing, terreno_w_m, terreno_h_m, comodos, px_por_
 
 
 # ========================
-# DXF com Paredes Duplas
+# DXF com Paredes Duplas (CORRIGIDO)
 # ========================
 def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12):
+    """Gera DXF com paredes duplas"""
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
 
@@ -207,6 +208,7 @@ def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
             except Exception:
                 txt.dxf.insert = (cx, cy)
 
+    # CORRIGIDO: usar BytesIO em vez de StringIO
     buff = io.BytesIO()
     doc.write(buff)
     buff.seek(0)
