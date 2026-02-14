@@ -4,7 +4,7 @@ import uuid
 import io
 import math
 import json
-import inspect
+import hashlib
 import ezdxf
 
 # ========================
@@ -29,8 +29,9 @@ def snap(v, step):
     return round(v / step) * step
 
 
-def stable_hash(obj) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+def get_hash(obj) -> str:
+    """Hash estável para detectar mudanças reais"""
+    return hashlib.md5(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def ensure_ids(comodos):
@@ -40,7 +41,7 @@ def ensure_ids(comodos):
 
 
 def comodos_to_drawing(terreno_w_m, terreno_h_m, comodos, px_por_m):
-    """Converte cômodos para formato Fabric.js (canvas)"""
+    """Converte cômodos para formato Fabric.js"""
     objects = [{
         "type": "rect",
         "left": 0,
@@ -72,27 +73,17 @@ def comodos_to_drawing(terreno_w_m, terreno_h_m, comodos, px_por_m):
     return {"version": "4.4.0", "objects": objects}
 
 
-def sanitize_transform_rect(obj):
-    """Aplica scale no width/height"""
-    sx = float(obj.get("scaleX", 1.0) or 1.0)
-    sy = float(obj.get("scaleY", 1.0) or 1.0)
-    w = float(obj.get("width", 0.0) or 0.0) * sx
-    h = float(obj.get("height", 0.0) or 0.0) * sy
-    obj["width"] = w
-    obj["height"] = h
-    obj["scaleX"] = 1.0
-    obj["scaleY"] = 1.0
-    return obj
-
-
-def apply_constraints_and_sync(drawing, terreno_w_m, terreno_h_m, comodos, px_por_m, snap_m):
-    """Sincroniza canvas com comodos, aplicando snap e clamp"""
+def sync_comodos_from_canvas(drawing, terreno_w_m, terreno_h_m, comodos, px_por_m, snap_m):
+    """
+    Sincroniza comodos a partir do drawing do canvas.
+    NÃO reconstrói o drawing (evita rerun infinito).
+    """
     if not drawing or "objects" not in drawing:
-        return drawing
+        return
 
     objs = drawing.get("objects", [])
     if len(objs) <= 1:
-        return drawing
+        return
 
     terreno_w_px = float(terreno_w_m * px_por_m)
     terreno_h_px = float(terreno_h_m * px_por_m)
@@ -106,45 +97,42 @@ def apply_constraints_and_sync(drawing, terreno_w_m, terreno_h_m, comodos, px_po
         if obj.get("type") != "rect":
             continue
 
-        obj = sanitize_transform_rect(obj)
-
+        # Aplica scale no width/height
+        sx = float(obj.get("scaleX", 1.0) or 1.0)
+        sy = float(obj.get("scaleY", 1.0) or 1.0)
+        w_px = float(obj.get("width", 0.0) or 0.0) * sx
+        h_px = float(obj.get("height", 0.0) or 0.0) * sy
         left_px = float(obj.get("left", 0.0) or 0.0)
         top_px = float(obj.get("top", 0.0) or 0.0)
-        w_px = float(obj.get("width", 0.0) or 0.0)
-        h_px = float(obj.get("height", 0.0) or 0.0)
 
-        max_left = max(0.0, terreno_w_px - w_px)
-        max_top = max(0.0, terreno_h_px - h_px)
-
+        # Snap em pixels
         if snap_px > 0:
             left_px = snap(left_px, snap_px)
             top_px = snap(top_px, snap_px)
             w_px = max(1.0, snap(w_px, snap_px))
             h_px = max(1.0, snap(h_px, snap_px))
 
+        # Clamp em pixels
+        max_left = max(0.0, terreno_w_px - w_px)
+        max_top = max(0.0, terreno_h_px - h_px)
         left_px = clamp(left_px, 0.0, max_left)
         top_px = clamp(top_px, 0.0, max_top)
 
-        obj["left"] = float(left_px)
-        obj["top"] = float(top_px)
-        obj["width"] = float(w_px)
-        obj["height"] = float(h_px)
-
+        # Converte para metros
         w_m = w_px / px_por_m
         h_m = h_px / px_por_m
         x_m = left_px / px_por_m
         y_m = terreno_h_m - (top_px / px_por_m) - h_m
 
+        # Clamp final em metros
         x_m = clamp(x_m, 0.0, max(0.0, terreno_w_m - w_m))
         y_m = clamp(y_m, 0.0, max(0.0, terreno_h_m - h_m))
 
+        # Atualiza comodos (SEM reconstruir drawing)
         comodos[i - 1]["x"] = float(x_m)
         comodos[i - 1]["y"] = float(y_m)
         comodos[i - 1]["largura"] = float(max(0.10, w_m))
         comodos[i - 1]["comprimento"] = float(max(0.10, h_m))
-
-    drawing["objects"] = objs
-    return drawing
 
 
 # ========================
@@ -254,8 +242,6 @@ if "esp_int_m" not in st.session_state:
     st.session_state["esp_int_m"] = 0.12
 if "drawing" not in st.session_state:
     st.session_state["drawing"] = None
-if "canvas_ver" not in st.session_state:
-    st.session_state["canvas_ver"] = 0
 if "last_canvas_hash" not in st.session_state:
     st.session_state["last_canvas_hash"] = None
 
@@ -280,14 +266,7 @@ with col_left:
         st.session_state["snap_m"] = float(snap_new)
         st.session_state["esp_ext_m"] = float(esp_ext_new)
         st.session_state["esp_int_m"] = float(esp_int_new)
-        st.session_state["drawing"] = comodos_to_drawing(
-            st.session_state["terreno_w_m"],
-            st.session_state["terreno_h_m"],
-            st.session_state["comodos"],
-            st.session_state["px_por_m"],
-        )
-        st.session_state["canvas_ver"] += 1
-        st.session_state["last_canvas_hash"] = None
+        st.session_state["drawing"] = None
         st.rerun()
 
     st.divider()
@@ -308,38 +287,17 @@ with col_left:
             "largura": float(w_m),
             "comprimento": float(h_m),
         })
-        st.session_state["drawing"] = comodos_to_drawing(
-            st.session_state["terreno_w_m"],
-            st.session_state["terreno_h_m"],
-            st.session_state["comodos"],
-            st.session_state["px_por_m"],
-        )
-        st.session_state["canvas_ver"] += 1
-        st.session_state["last_canvas_hash"] = None
+        st.session_state["drawing"] = None
         st.rerun()
 
     if b2.button("Limpar tudo", use_container_width=True):
         st.session_state["comodos"] = []
-        st.session_state["drawing"] = comodos_to_drawing(
-            st.session_state["terreno_w_m"],
-            st.session_state["terreno_h_m"],
-            [],
-            st.session_state["px_por_m"],
-        )
-        st.session_state["canvas_ver"] += 1
-        st.session_state["last_canvas_hash"] = None
+        st.session_state["drawing"] = None
         st.rerun()
 
     st.divider()
-    if st.button("🔄 Recriar desenho (se travar)", use_container_width=True):
-        st.session_state["drawing"] = comodos_to_drawing(
-            st.session_state["terreno_w_m"],
-            st.session_state["terreno_h_m"],
-            st.session_state["comodos"],
-            st.session_state["px_por_m"],
-        )
-        st.session_state["canvas_ver"] += 1
-        st.session_state["last_canvas_hash"] = None
+    if st.button("🔄 Recriar desenho", use_container_width=True):
+        st.session_state["drawing"] = None
         st.rerun()
 
     st.divider()
@@ -371,11 +329,12 @@ with col_right:
     canvas_w = int(terreno_w_m * px_por_m)
     canvas_h = int(terreno_h_m * px_por_m)
 
+    # Cria drawing uma única vez
     if st.session_state["drawing"] is None:
         st.session_state["drawing"] = comodos_to_drawing(terreno_w_m, terreno_h_m, st.session_state["comodos"], px_por_m)
 
-    sig = inspect.signature(st_canvas)
-    canvas_kwargs = dict(
+    # Canvas com key FIXA (não muda durante edição)
+    canvas_result = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=2,
         stroke_color="blue",
@@ -386,17 +345,15 @@ with col_right:
         display_toolbar=False,
         initial_drawing=st.session_state["drawing"],
         update_streamlit=True,
-        key=f"planta_canvas_{st.session_state['canvas_ver']}",
+        key="planta_canvas_fixed",  # KEY FIXA!
     )
-    if "realtime_update" in sig.parameters:
-        canvas_kwargs["realtime_update"] = False
 
-    canvas_result = st_canvas(**canvas_kwargs)
-
+    # Sincroniza APENAS se o canvas mudou de verdade
     if canvas_result.json_data:
-        current_hash = stable_hash(canvas_result.json_data)
+        current_hash = get_hash(canvas_result.json_data)
         if current_hash != st.session_state["last_canvas_hash"]:
-            st.session_state["drawing"] = apply_constraints_and_sync(
+            # Sincroniza comodos SEM reconstruir drawing
+            sync_comodos_from_canvas(
                 canvas_result.json_data,
                 terreno_w_m,
                 terreno_h_m,
