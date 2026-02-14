@@ -29,8 +29,8 @@ def gerar_dxf_completo(larg_total, comp_total, lista_comodos):
         pontos_interno = [(x, y), (x + l, y), (x + l, y + c), (x, y + c), (x, y)]
         msp.add_lwpolyline(pontos_interno, dxfattribs={"layer": "PAREDES_INTERNAS"})
 
-        txt = msp.add_text(nome, dxfattribs={"layer": "TEXTOS", "height": 0.3})
-        txt.set_placement((x + l / 2, y + c / 2), align=TextEntityAlignment.MIDDLE_CENTER)
+       txt = msp.add_text(nome, dxfattribs={'layer': 'TEXTOS', 'height': 0.3})
+txt.set_placement((x + l/2, y + c/2), align="MIDDLE_CENTER")
 
     output = io.StringIO()
     doc.write(output)
