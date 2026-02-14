@@ -6,6 +6,10 @@ import math
 import json
 import hashlib
 import ezdxf
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.pdfgen import canvas as pdf_canvas
+from reportlab.lib.units import cm
+from datetime import datetime
 
 # ========================
 # Compatibilidade ezdxf
@@ -74,10 +78,7 @@ def comodos_to_drawing(terreno_w_m, terreno_h_m, comodos, px_por_m):
 
 
 def sync_comodos_from_canvas(drawing, terreno_w_m, terreno_h_m, comodos, px_por_m, snap_m):
-    """
-    Sincroniza comodos a partir do drawing do canvas.
-    NÃO reconstrói o drawing (evita rerun infinito).
-    """
+    """Sincroniza comodos a partir do drawing do canvas"""
     if not drawing or "objects" not in drawing:
         return
 
@@ -97,7 +98,6 @@ def sync_comodos_from_canvas(drawing, terreno_w_m, terreno_h_m, comodos, px_por_
         if obj.get("type") != "rect":
             continue
 
-        # Aplica scale no width/height
         sx = float(obj.get("scaleX", 1.0) or 1.0)
         sy = float(obj.get("scaleY", 1.0) or 1.0)
         w_px = float(obj.get("width", 0.0) or 0.0) * sx
@@ -105,30 +105,25 @@ def sync_comodos_from_canvas(drawing, terreno_w_m, terreno_h_m, comodos, px_por_
         left_px = float(obj.get("left", 0.0) or 0.0)
         top_px = float(obj.get("top", 0.0) or 0.0)
 
-        # Snap em pixels
         if snap_px > 0:
             left_px = snap(left_px, snap_px)
             top_px = snap(top_px, snap_px)
             w_px = max(1.0, snap(w_px, snap_px))
             h_px = max(1.0, snap(h_px, snap_px))
 
-        # Clamp em pixels
         max_left = max(0.0, terreno_w_px - w_px)
         max_top = max(0.0, terreno_h_px - h_px)
         left_px = clamp(left_px, 0.0, max_left)
         top_px = clamp(top_px, 0.0, max_top)
 
-        # Converte para metros
         w_m = w_px / px_por_m
         h_m = h_px / px_por_m
         x_m = left_px / px_por_m
         y_m = terreno_h_m - (top_px / px_por_m) - h_m
 
-        # Clamp final em metros
         x_m = clamp(x_m, 0.0, max(0.0, terreno_w_m - w_m))
         y_m = clamp(y_m, 0.0, max(0.0, terreno_h_m - h_m))
 
-        # Atualiza comodos (SEM reconstruir drawing)
         comodos[i - 1]["x"] = float(x_m)
         comodos[i - 1]["y"] = float(y_m)
         comodos[i - 1]["largura"] = float(max(0.10, w_m))
@@ -212,9 +207,189 @@ def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
             except Exception:
                 txt.dxf.insert = (cx, cy)
 
-    buff = io.StringIO()
+    buff = io.BytesIO()
     doc.write(buff)
+    buff.seek(0)
     return buff.getvalue()
+
+
+# ========================
+# PDF com ReportLab
+# ========================
+def gerar_pdf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12):
+    """Gera PDF com planta baixa em A4 paisagem"""
+    buffer = io.BytesIO()
+    page_width, page_height = landscape(A4)
+    c = pdf_canvas.Canvas(buffer, pagesize=landscape(A4))
+    
+    margin = 1 * cm
+    disponivel_w = page_width - 2 * margin
+    disponivel_h = page_height - 3 * cm
+    
+    # Escala para caber na página
+    escala_w = disponivel_w / larg_m
+    escala_h = disponivel_h / comp_m
+    escala = min(escala_w, escala_h)
+    
+    # Posição inicial
+    x_inicio = margin + (disponivel_w - larg_m * escala) / 2
+    y_inicio = margin + (disponivel_h - comp_m * escala) / 2
+    
+    # Título
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(margin, page_height - 1 * cm, "PLANTA BAIXA")
+    
+    # Data e escala
+    c.setFont("Helvetica", 10)
+    data_str = datetime.now().strftime("%d/%m/%Y")
+    c.drawString(margin, page_height - 1.5 * cm, f"Data: {data_str}")
+    c.drawString(margin + 8 * cm, page_height - 1.5 * cm, f"Escala: 1:{int(1/escala*100)}")
+    
+    # Função auxiliar para desenhar parede dupla
+    def desenhar_parede_dupla(p1, p2, thickness):
+        off = thickness * escala / 2.0
+        x1, y1 = p1
+        x2, y2 = p2
+        
+        x1_px = x_inicio + x1 * escala
+        y1_px = y_inicio + y1 * escala
+        x2_px = x_inicio + x2 * escala
+        y2_px = y_inicio + y2 * escala
+        
+        if math.isclose(y1, y2, abs_tol=1e-9):
+            y = y1_px
+            c.line(x1_px, y + off, x2_px, y + off)
+            c.line(x1_px, y - off, x2_px, y - off)
+        elif math.isclose(x1, x2, abs_tol=1e-9):
+            x = x1_px
+            c.line(x + off, y1_px, x + off, y2_px)
+            c.line(x - off, y1_px, x - off, y2_px)
+    
+    # Coletar segmentos
+    def q(v, nd=4):
+        return round(float(v), nd)
+    
+    def seg_key(p1, p2):
+        x1, y1 = q(p1[0]), q(p1[1])
+        x2, y2 = q(p2[0]), q(p2[1])
+        if (x2, y2) < (x1, y1):
+            x1, y1, x2, y2 = x2, y2, x1, y1
+        return (x1, y1, x2, y2)
+    
+    segs = {}
+    textos = []
+    
+    for com in comodos:
+        x, y = float(com["x"]), float(com["y"])
+        w, h = float(com["largura"]), float(com["comprimento"])
+        nome = com.get("nome", "Bloco")
+        
+        pA = (x, y)
+        pB = (x + w, y)
+        pC = (x + w, y + h)
+        pD = (x, y + h)
+        
+        for p1, p2 in [(pA, pB), (pB, pC), (pC, pD), (pD, pA)]:
+            k = seg_key(p1, p2)
+            if k not in segs:
+                segs[k] = {"p1": (k[0], k[1]), "p2": (k[2], k[3]), "count": 1}
+            else:
+                segs[k]["count"] += 1
+        
+        textos.append((nome, x + w / 2, y + h / 2))
+    
+    # Desenhar paredes
+    c.setLineWidth(0.5)
+    for item in segs.values():
+        thickness = esp_ext_m if item["count"] == 1 else esp_int_m
+        desenhar_parede_dupla(item["p1"], item["p2"], thickness)
+    
+    # Desenhar textos
+    c.setFont("Helvetica", 8)
+    for nome, cx, cy in textos:
+        cx_px = x_inicio + cx * escala
+        cy_px = y_inicio + cy * escala
+        c.drawCentredString(cx_px, cy_px, nome)
+    
+    c.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# ========================
+# SVG/CDR com paredes duplas
+# ========================
+def gerar_svg_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12):
+    """Gera SVG compatível com CorelDRAW"""
+    escala = 100  # 1m = 100 unidades SVG
+    
+    svg_lines = [
+        f'<svg width="{larg_m * escala}" height="{comp_m * escala}" xmlns="http://www.w3.org/2000/svg">',
+        '<defs><style>text { font-family: Arial; font-size: 12px; }</style></defs>',
+    ]
+    
+    # Função auxiliar
+    def q(v, nd=4):
+        return round(float(v), nd)
+    
+    def seg_key(p1, p2):
+        x1, y1 = q(p1[0]), q(p1[1])
+        x2, y2 = q(p2[0]), q(p2[1])
+        if (x2, y2) < (x1, y1):
+            x1, y1, x2, y2 = x2, y2, x1, y1
+        return (x1, y1, x2, y2)
+    
+    segs = {}
+    textos = []
+    
+    for com in comodos:
+        x, y = float(com["x"]), float(com["y"])
+        w, h = float(com["largura"]), float(com["comprimento"])
+        nome = com.get("nome", "Bloco")
+        
+        pA = (x, y)
+        pB = (x + w, y)
+        pC = (x + w, y + h)
+        pD = (x, y + h)
+        
+        for p1, p2 in [(pA, pB), (pB, pC), (pC, pD), (pD, pA)]:
+            k = seg_key(p1, p2)
+            if k not in segs:
+                segs[k] = {"p1": (k[0], k[1]), "p2": (k[2], k[3]), "count": 1}
+            else:
+                segs[k]["count"] += 1
+        
+        textos.append((nome, x + w / 2, y + h / 2))
+    
+    # Desenhar paredes
+    for item in segs.values():
+        thickness = esp_ext_m if item["count"] == 1 else esp_int_m
+        off = thickness * escala / 2.0
+        x1, y1 = item["p1"]
+        x2, y2 = item["p2"]
+        
+        x1_px = x1 * escala
+        y1_px = y1 * escala
+        x2_px = x2 * escala
+        y2_px = y2 * escala
+        
+        if math.isclose(y1, y2, abs_tol=1e-9):
+            y = y1_px
+            svg_lines.append(f'<line x1="{x1_px}" y1="{y + off}" x2="{x2_px}" y2="{y + off}" stroke="black" stroke-width="1"/>')
+            svg_lines.append(f'<line x1="{x1_px}" y1="{y - off}" x2="{x2_px}" y2="{y - off}" stroke="black" stroke-width="1"/>')
+        elif math.isclose(x1, x2, abs_tol=1e-9):
+            x = x1_px
+            svg_lines.append(f'<line x1="{x + off}" y1="{y1_px}" x2="{x + off}" y2="{y2_px}" stroke="black" stroke-width="1"/>')
+            svg_lines.append(f'<line x1="{x - off}" y1="{y1_px}" x2="{x - off}" y2="{y2_px}" stroke="black" stroke-width="1"/>')
+    
+    # Desenhar textos
+    for nome, cx, cy in textos:
+        cx_px = cx * escala
+        cy_px = cy * escala
+        svg_lines.append(f'<text x="{cx_px}" y="{cy_px}" text-anchor="middle" dominant-baseline="middle">{nome}</text>')
+    
+    svg_lines.append('</svg>')
+    return '\n'.join(svg_lines)
 
 
 # ========================
@@ -303,20 +478,59 @@ with col_left:
     st.divider()
     st.header("📥 Exportar")
 
-    dxf_text = gerar_dxf_paredes_duplas(
+    # Gerar arquivos
+    dxf_data = gerar_dxf_paredes_duplas(
         st.session_state["terreno_w_m"],
         st.session_state["terreno_h_m"],
         st.session_state["comodos"],
         esp_ext_m=st.session_state["esp_ext_m"],
         esp_int_m=st.session_state["esp_int_m"],
     )
-    st.download_button(
-        "📄 Baixar DXF",
-        data=dxf_text,
-        file_name="planta.dxf",
-        mime="application/dxf",
-        use_container_width=True,
+    
+    pdf_data = gerar_pdf_paredes_duplas(
+        st.session_state["terreno_w_m"],
+        st.session_state["terreno_h_m"],
+        st.session_state["comodos"],
+        esp_ext_m=st.session_state["esp_ext_m"],
+        esp_int_m=st.session_state["esp_int_m"],
     )
+    
+    svg_data = gerar_svg_paredes_duplas(
+        st.session_state["terreno_w_m"],
+        st.session_state["terreno_h_m"],
+        st.session_state["comodos"],
+        esp_ext_m=st.session_state["esp_ext_m"],
+        esp_int_m=st.session_state["esp_int_m"],
+    )
+
+    col_exp1, col_exp2, col_exp3 = st.columns(3)
+    
+    with col_exp1:
+        st.download_button(
+            "📄 Baixar PDF",
+            data=pdf_data,
+            file_name="planta.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
+    with col_exp2:
+        st.download_button(
+            "🎨 Baixar SVG/CDR",
+            data=svg_data,
+            file_name="planta.svg",
+            mime="image/svg+xml",
+            use_container_width=True,
+        )
+
+    with col_exp3:
+        st.download_button(
+            "📐 Baixar DXF",
+            data=dxf_data,
+            file_name="planta.dxf",
+            mime="application/dxf",
+            use_container_width=True,
+        )
 
 with col_right:
     st.subheader("🎨 Editor (arrastar / redimensionar)")
@@ -329,11 +543,9 @@ with col_right:
     canvas_w = int(terreno_w_m * px_por_m)
     canvas_h = int(terreno_h_m * px_por_m)
 
-    # Cria drawing uma única vez
     if st.session_state["drawing"] is None:
         st.session_state["drawing"] = comodos_to_drawing(terreno_w_m, terreno_h_m, st.session_state["comodos"], px_por_m)
 
-    # Canvas com key FIXA (não muda durante edição)
     canvas_result = st_canvas(
         fill_color="rgba(0,0,0,0)",
         stroke_width=2,
@@ -345,14 +557,12 @@ with col_right:
         display_toolbar=False,
         initial_drawing=st.session_state["drawing"],
         update_streamlit=True,
-        key="planta_canvas_fixed",  # KEY FIXA!
+        key="planta_canvas_fixed",
     )
 
-    # Sincroniza APENAS se o canvas mudou de verdade
     if canvas_result.json_data:
         current_hash = get_hash(canvas_result.json_data)
         if current_hash != st.session_state["last_canvas_hash"]:
-            # Sincroniza comodos SEM reconstruir drawing
             sync_comodos_from_canvas(
                 canvas_result.json_data,
                 terreno_w_m,
