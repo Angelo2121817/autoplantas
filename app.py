@@ -450,7 +450,7 @@ if "snap_m" not in st.session_state:
     st.session_state["snap_m"] = 0.10
 if "esp_ext_m" not in st.session_state:
     st.session_state["esp_ext_m"] = 0.20
-iif "esp_int_m" not in st.session_state:
+if "esp_int_m" not in st.session_state:
     st.session_state["esp_int_m"] = 0.12
 if "margem_m" not in st.session_state:
     if "margem_m" not in st.session_state:
