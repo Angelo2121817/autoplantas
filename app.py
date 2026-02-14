@@ -1,35 +1,17 @@
 import streamlit as st
-import ezdxf
-import io
+from streamlit_drawable_canvas import st_canvas
 import uuid
 import inspect
-from streamlit_drawable_canvas import st_canvas
-
-st.set_page_config(page_title="AutoPlantas", layout="wide")
-st.title("AutoPlantas — Editor por Blocos (protótipo)")
+import io
+import ezdxf
 
 # =========================
-# Estado (Session State)
+# Compat ezdxf (alinhamento do texto)
 # =========================
-if "comodos" not in st.session_state:
-    st.session_state["comodos"] = []  # cada item: {id, nome, x, y, largura, comprimento}
-
-if "px_por_m" not in st.session_state:
-    st.session_state["px_por_m"] = 40
-
-if "drawing" not in st.session_state:
-    st.session_state["drawing"] = None  # JSON do canvas (dict)
-
-if "canvas_ver" not in st.session_state:
-    st.session_state["canvas_ver"] = 0  # incrementa quando queremos resetar o componente
-
-if "last_canvas_json" not in st.session_state:
-    st.session_state["last_canvas_json"] = None
-
-# garantir ID em itens antigos
-for c in st.session_state["comodos"]:
-    if "id" not in c:
-        c["id"] = f"c_{uuid.uuid4().hex[:8]}"
+try:
+    from ezdxf.enums import TextEntityAlignment as TEA
+except Exception:
+    TEA = None  # fallback para versões antigas
 
 
 # =========================
@@ -45,10 +27,16 @@ def snap(v, step):
     return round(v / step) * step
 
 
+def garantir_ids(comodos):
+    for c in comodos:
+        if "id" not in c:
+            c["id"] = f"c_{uuid.uuid4().hex[:8]}"
+
+
 def comodos_para_drawing(largura_m, comprimento_m, comodos, px_por_m):
     """
-    Objects[0] = terreno (não selecionável)
-    Objects[1:] = comodos (index i ↔ comodos[i])
+    objects[0] = terreno (não selecionável)
+    objects[1:] = comodos (mapeado por índice com comodos[i])
     """
     objects = [{
         "type": "rect",
@@ -65,11 +53,12 @@ def comodos_para_drawing(largura_m, comprimento_m, comodos, px_por_m):
     }]
 
     for c in comodos:
+        # Observação: estamos usando Y invertido para ter y=0 embaixo (planta)
+        top_px = (comprimento_m - (c["y"] + c["comprimento"])) * px_por_m
         objects.append({
             "type": "rect",
             "left": float(c["x"] * px_por_m),
-            # invertendo Y para ficar “planta”: y=0 embaixo
-            "top": float((comprimento_m - (c["y"] + c["comprimento"])) * px_por_m),
+            "top": float(top_px),
             "width": float(c["largura"] * px_por_m),
             "height": float(c["comprimento"] * px_por_m),
             "fill": "rgba(160,203,232,0.5)",
@@ -83,14 +72,14 @@ def comodos_para_drawing(largura_m, comprimento_m, comodos, px_por_m):
 
 def drawing_para_comodos(drawing, largura_m, comprimento_m, comodos, px_por_m, snap_m=0.0):
     """
-    Lê objects[1:] e escreve de volta em comodos (por índice).
+    Lê objects[1:] do canvas (pula terreno) e escreve em comodos[i] (por índice).
     Aplica snap e clamp para manter dentro do terreno.
     """
     objs = (drawing or {}).get("objects", [])
     if len(objs) <= 1:
         return
 
-    for i, obj in enumerate(objs[1:]):  # pula terreno
+    for i, obj in enumerate(objs[1:]):
         if i >= len(comodos):
             break
 
@@ -99,20 +88,21 @@ def drawing_para_comodos(drawing, largura_m, comprimento_m, comodos, px_por_m, s
         w_px = float(obj.get("width", 0.0)) * float(obj.get("scaleX", 1.0))
         h_px = float(obj.get("height", 0.0)) * float(obj.get("scaleY", 1.0))
 
-        w_m_new = w_px / px_por_m
-        h_m_new = h_px / px_por_m
+        w_m_new = max(0.10, w_px / px_por_m)
+        h_m_new = max(0.10, h_px / px_por_m)
 
         x_m_new = left_px / px_por_m
-        # desfaz inversão do Y
+        # desfaz inversão do Y: top = (comp - (y+h)) * px
         y_m_new = float(comprimento_m) - (top_px / px_por_m) - h_m_new
 
-        # snap
+        # snap (posição e tamanho)
         x_m_new = snap(x_m_new, snap_m)
         y_m_new = snap(y_m_new, snap_m)
-        w_m_new = max(0.10, snap(w_m_new, snap_m) if snap_m > 0 else w_m_new)
-        h_m_new = max(0.10, snap(h_m_new, snap_m) if snap_m > 0 else h_m_new)
+        if snap_m > 0:
+            w_m_new = max(0.10, snap(w_m_new, snap_m))
+            h_m_new = max(0.10, snap(h_m_new, snap_m))
 
-        # clamp (manter dentro do terreno)
+        # clamp (para manter dentro do terreno)
         x_m_new = clamp(x_m_new, 0.0, max(0.0, float(largura_m) - w_m_new))
         y_m_new = clamp(y_m_new, 0.0, max(0.0, float(comprimento_m) - h_m_new))
 
@@ -123,13 +113,13 @@ def drawing_para_comodos(drawing, largura_m, comprimento_m, comodos, px_por_m, s
 
 
 # =========================
-# DXF
+# DXF (exportação)
 # =========================
 def gerar_dxf(larg_m, comp_m, lista_comodos):
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
 
-    # layers
+    # Layers
     if "ESTRUTURA_EXTERNA" not in doc.layers:
         doc.layers.new(name="ESTRUTURA_EXTERNA", dxfattribs={"color": 7})
     if "PAREDES_INTERNAS" not in doc.layers:
@@ -137,20 +127,35 @@ def gerar_dxf(larg_m, comp_m, lista_comodos):
     if "TEXTOS" not in doc.layers:
         doc.layers.new(name="TEXTOS", dxfattribs={"color": 2})
 
-    # contorno externo
+    # Contorno
     pts = [(0, 0), (larg_m, 0), (larg_m, comp_m), (0, comp_m), (0, 0)]
     msp.add_lwpolyline(pts, dxfattribs={"layer": "ESTRUTURA_EXTERNA"})
 
     for c in lista_comodos:
         x, y = c["x"], c["y"]
         w, h = c["largura"], c["comprimento"]
-        nome = c["nome"]
+        nome = c.get("nome", c.get("tipo", "Bloco"))
 
+        # Retângulo do cômodo
         pts_i = [(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)]
         msp.add_lwpolyline(pts_i, dxfattribs={"layer": "PAREDES_INTERNAS"})
 
+        # Texto centralizado
+        cx, cy = (x + w / 2), (y + h / 2)
         txt = msp.add_text(nome, dxfattribs={"layer": "TEXTOS", "height": 0.30})
-        txt.set_placement((x + w / 2, y + h / 2), align="MIDDLE_CENTER")
+
+        if TEA is not None:
+            # ezdxf novo: exige enum
+            txt.set_placement((cx, cy), align=TEA.MIDDLE_CENTER)
+        else:
+            # fallback para versões antigas: set_pos aceita string
+            try:
+                txt.set_pos((cx, cy), align="MIDDLE_CENTER")
+            except Exception:
+                # último fallback: inserção e flags (sem garantia de centralização perfeita em todas versões)
+                txt.dxf.insert = (cx, cy)
+                txt.dxf.halign = 1
+                txt.dxf.valign = 1
 
     buff = io.StringIO()
     doc.write(buff)
@@ -158,16 +163,32 @@ def gerar_dxf(larg_m, comp_m, lista_comodos):
 
 
 # =========================
-# UI
+# App
 # =========================
+st.set_page_config(page_title="AutoPlantas", layout="wide")
+st.title("AutoPlantas — Editor por Blocos (protótipo)")
+
+# Estado
+if "comodos" not in st.session_state:
+    st.session_state["comodos"] = []
+if "px_por_m" not in st.session_state:
+    st.session_state["px_por_m"] = 40
+if "drawing" not in st.session_state:
+    st.session_state["drawing"] = None
+if "canvas_ver" not in st.session_state:
+    st.session_state["canvas_ver"] = 0
+if "last_canvas_json" not in st.session_state:
+    st.session_state["last_canvas_json"] = None
+
+garantir_ids(st.session_state["comodos"])
+
 col_left, col_right = st.columns([1, 2], gap="large")
 
 with col_left:
-    st.header("Terreno / Configurações")
+    st.header("Terreno / Construção")
 
     largura_m = st.number_input("Largura (m)", 5.0, 200.0, 15.0, step=1.0)
     comprimento_m = st.number_input("Comprimento (m)", 5.0, 200.0, 30.0, step=1.0)
-
     st.session_state["px_por_m"] = st.slider("Escala (px por metro)", 10, 100, st.session_state["px_por_m"])
     px_por_m = st.session_state["px_por_m"]
 
@@ -175,7 +196,7 @@ with col_left:
     st.header("Grade / Snap")
 
     snap_m = st.selectbox("Snap (m)", [0.0, 0.05, 0.10, 0.20, 0.50], index=2)
-    st.caption("Dica: `0,10 m` deixa bem usável. `0` desliga snap.")
+    st.caption("0 desliga o snap. 0,10 m costuma ficar bem usável.")
 
     st.divider()
     st.header("Adicionar bloco")
@@ -195,6 +216,7 @@ with col_left:
             "largura": float(w_m),
             "comprimento": float(h_m),
         })
+        # recria o desenho e reseta o componente
         st.session_state["drawing"] = comodos_para_drawing(largura_m, comprimento_m, st.session_state["comodos"], px_por_m)
         st.session_state["canvas_ver"] += 1
         st.rerun()
@@ -213,6 +235,7 @@ with col_left:
 
     st.divider()
     st.subheader("Exportar")
+
     dxf_text = gerar_dxf(largura_m, comprimento_m, st.session_state["comodos"])
     st.download_button(
         "Baixar DXF",
@@ -222,14 +245,13 @@ with col_left:
         use_container_width=True,
     )
 
-
 with col_right:
     st.subheader("Editor (arrastar / redimensionar)")
 
     canvas_w = int(largura_m * px_por_m)
     canvas_h = int(comprimento_m * px_por_m)
 
-    # Se não existe drawing persistido, cria uma vez
+    # se não existe drawing persistido, cria
     if st.session_state["drawing"] is None:
         st.session_state["drawing"] = comodos_para_drawing(largura_m, comprimento_m, st.session_state["comodos"], px_por_m)
 
@@ -249,11 +271,12 @@ with col_right:
         key=f"planta_canvas_{st.session_state['canvas_ver']}",
     )
     if "realtime_update" in sig.parameters:
+        # importante para não rerodar a cada micro-movimento (reduz piscar)
         canvas_kwargs["realtime_update"] = False
 
     canvas_result = st_canvas(**canvas_kwargs)
 
-    # Sincroniza canvas -> comodos, e persiste o próprio JSON do canvas
+    # Sincroniza canvas -> comodos (só quando muda)
     if canvas_result.json_data and canvas_result.json_data != st.session_state["last_canvas_json"]:
         drawing_para_comodos(
             canvas_result.json_data,
@@ -264,14 +287,11 @@ with col_right:
             snap_m=snap_m,
         )
 
-        # Após aplicar snap/clamp nos comodos, reconstrói o drawing “limpo”
-        # (isso mantém a geometria coerente e evita scaleX/scaleY acumulando)
+        # Reconstrói um drawing “limpo” (evita scaleX/scaleY acumulando)
         st.session_state["drawing"] = comodos_para_drawing(largura_m, comprimento_m, st.session_state["comodos"], px_por_m)
         st.session_state["last_canvas_json"] = canvas_result.json_data
 
-    st.caption(
-        "Como usar: clique no bloco para selecionar, arraste para mover, use as alças para redimensionar."
-    )
+    st.caption("Clique no bloco para selecionar, arraste para mover, use as alças para redimensionar.")
 
-    with st.expander("Lista de blocos (debug)"):
+    with st.expander("Blocos (debug)"):
         st.json(st.session_state["comodos"])
