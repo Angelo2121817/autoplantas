@@ -1,3 +1,4 @@
+
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import uuid
@@ -133,8 +134,8 @@ def sync_comodos_from_canvas(drawing, terreno_w_m, terreno_h_m, comodos, px_por_
 # ========================
 # DXF com Paredes Duplas (CORRIGIDO COM TextIOWrapper)
 # ========================
-def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12):
-    """Gera DXF com paredes duplas"""
+def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12, margem_m=0.50):
+    """Gera DXF com paredes duplas e margem"""
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
 
@@ -142,6 +143,8 @@ def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
         doc.layers.new(name="PAREDES", dxfattribs={"color": 7})
     if "TEXTOS" not in doc.layers:
         doc.layers.new(name="TEXTOS", dxfattribs={"color": 2})
+    if "MARGEM" not in doc.layers:
+        doc.layers.new(name="MARGEM", dxfattribs={"color": 1})
 
     def q(v, nd=4):
         return round(float(v), nd)
@@ -194,6 +197,13 @@ def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
 
         msp.add_line((x1, y1), (x2, y2), dxfattribs={"layer": "PAREDES"})
 
+    # Desenhar margem (retângulo externo)
+    msp.add_lwpolyline(
+        [(-margem_m, -margem_m), (larg_m + margem_m, -margem_m), 
+         (larg_m + margem_m, comp_m + margem_m), (-margem_m, comp_m + margem_m), (-margem_m, -margem_m)],
+        dxfattribs={"layer": "MARGEM", "color": 1}
+    )
+
     for item in segs.values():
         thickness = esp_ext_m if item["count"] == 1 else esp_int_m
         draw_double_wall(item["p1"], item["p2"], thickness)
@@ -216,12 +226,20 @@ def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
     buff_bytes.seek(0)
     return buff_bytes.getvalue()
 
+    # CORRIGIDO: usar TextIOWrapper para converter strings em bytes
+    buff_bytes = io.BytesIO()
+    buff_text = io.TextIOWrapper(buff_bytes, encoding='utf-8')
+    doc.write(buff_text)
+    buff_text.flush()
+    buff_bytes.seek(0)
+    return buff_bytes.getvalue()
+
 
 # ========================
 # PDF com ReportLab
 # ========================
-def gerar_pdf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12):
-    """Gera PDF com planta baixa em A4 paisagem"""
+def gerar_pdf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12, margem_m=0.50):
+    """Gera PDF com planta baixa em A4 paisagem com margem"""
     buffer = io.BytesIO()
     page_width, page_height = landscape(A4)
     c = pdf_canvas.Canvas(buffer, pagesize=landscape(A4))
@@ -230,14 +248,16 @@ def gerar_pdf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
     disponivel_w = page_width - 2 * margin
     disponivel_h = page_height - 3 * cm
     
-    # Escala para caber na página
-    escala_w = disponivel_w / larg_m
-    escala_h = disponivel_h / comp_m
+    # Escala para caber na página (incluindo margem)
+    escala_w = disponivel_w / (larg_m + 2 * margem_m)
+    escala_h = disponivel_h / (comp_m + 2 * margem_m)
     escala = min(escala_w, escala_h)
     
-    # Posição inicial
-    x_inicio = margin + (disponivel_w - larg_m * escala) / 2
-    y_inicio = margin + (disponivel_h - comp_m * escala) / 2
+    # Posição inicial (com margem)
+    total_w = (larg_m + 2 * margem_m) * escala
+    total_h = (comp_m + 2 * margem_m) * escala
+    x_inicio = margin + (disponivel_w - total_w) / 2 + margem_m * escala
+    y_inicio = margin + (disponivel_h - total_h) / 2 + margem_m * escala
     
     # Título
     c.setFont("Helvetica-Bold", 16)
@@ -302,6 +322,14 @@ def gerar_pdf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
         
         textos.append((nome, x + w / 2, y + h / 2))
     
+    # Desenhar margem
+    c.setLineWidth(1.0)
+    margem_x1 = x_inicio - margem_m * escala
+    margem_y1 = y_inicio - margem_m * escala
+    margem_x2 = x_inicio + larg_m * escala
+    margem_y2 = y_inicio + comp_m * escala
+    c.rect(margem_x1, margem_y1, margem_x2 - margem_x1, margem_y2 - margem_y1, stroke=1, fill=0)
+    
     # Desenhar paredes
     c.setLineWidth(0.5)
     for item in segs.values():
@@ -319,16 +347,15 @@ def gerar_pdf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
     buffer.seek(0)
     return buffer.getvalue()
 
-
 # ========================
 # SVG/CDR com paredes duplas
 # ========================
-def gerar_svg_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12):
-    """Gera SVG compatível com CorelDRAW"""
+def gerar_svg_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12, margem_m=0.50):
+    """Gera SVG compatível com CorelDRAW com margem"""
     escala = 100  # 1m = 100 unidades SVG
     
     svg_lines = [
-        f'<svg width="{larg_m * escala}" height="{comp_m * escala}" xmlns="http://www.w3.org/2000/svg">',
+        f'<svg width="{(larg_m + 2 * margem_m) * escala}" height="{(comp_m + 2 * margem_m) * escala}" xmlns="http://www.w3.org/2000/svg">',
         '<defs><style>text { font-family: Arial; font-size: 12px; }</style></defs>',
     ]
     
@@ -365,6 +392,13 @@ def gerar_svg_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
         
         textos.append((nome, x + w / 2, y + h / 2))
     
+    # Desenhar margem
+    margem_x1 = margem_m * escala
+    margem_y1 = margem_m * escala
+    margem_x2 = (larg_m + margem_m) * escala
+    margem_y2 = (comp_m + margem_m) * escala
+    svg_lines.append(f'<rect x="{margem_x1}" y="{margem_y1}" width="{margem_x2 - margem_x1}" height="{margem_y2 - margem_y1}" stroke="black" stroke-width="2" fill="none"/>')
+    
     # Desenhar paredes
     for item in segs.values():
         thickness = esp_ext_m if item["count"] == 1 else esp_int_m
@@ -372,10 +406,10 @@ def gerar_svg_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
         x1, y1 = item["p1"]
         x2, y2 = item["p2"]
         
-        x1_px = x1 * escala
-        y1_px = y1 * escala
-        x2_px = x2 * escala
-        y2_px = y2 * escala
+        x1_px = (x1 + margem_m) * escala
+        y1_px = (y1 + margem_m) * escala
+        x2_px = (x2 + margem_m) * escala
+        y2_px = (y2 + margem_m) * escala
         
         if math.isclose(y1, y2, abs_tol=1e-9):
             y = y1_px
@@ -388,13 +422,12 @@ def gerar_svg_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
     
     # Desenhar textos
     for nome, cx, cy in textos:
-        cx_px = cx * escala
-        cy_px = cy * escala
+        cx_px = (cx + margem_m) * escala
+        cy_px = (cy + margem_m) * escala
         svg_lines.append(f'<text x="{cx_px}" y="{cy_px}" text-anchor="middle" dominant-baseline="middle">{nome}</text>')
     
     svg_lines.append('</svg>')
     return '\n'.join(svg_lines)
-
 
 # ========================
 # App Principal
@@ -436,6 +469,7 @@ with col_left:
         snap_new = st.selectbox("Snap (m)", [0.0, 0.05, 0.10, 0.20, 0.50], index=[0.0, 0.05, 0.10, 0.20, 0.50].index(float(st.session_state["snap_m"])))
         esp_ext_new = st.number_input("Parede externa (m)", 0.08, 0.60, float(st.session_state["esp_ext_m"]), step=0.01)
         esp_int_new = st.number_input("Parede interna (m)", 0.05, 0.40, float(st.session_state["esp_int_m"]), step=0.01)
+        margem_new = st.number_input("Margem da planta (m)", 0.0, 2.0, float(st.session_state["margem_m"]), step=0.10)
         aplicar = st.form_submit_button("✅ Aplicar")
 
     if aplicar:
@@ -445,6 +479,9 @@ with col_left:
         st.session_state["snap_m"] = float(snap_new)
         st.session_state["esp_ext_m"] = float(esp_ext_new)
         st.session_state["esp_int_m"] = float(esp_int_new)
+        
+        if "margem_m" not in st.session_state:
+    st.session_state["margem_m"] = 0.50
         st.session_state["drawing"] = None
         st.rerun()
 
@@ -483,12 +520,14 @@ with col_left:
     st.header("📥 Exportar")
 
     # Gerar arquivos
+       # Gerar arquivos
     dxf_data = gerar_dxf_paredes_duplas(
         st.session_state["terreno_w_m"],
         st.session_state["terreno_h_m"],
         st.session_state["comodos"],
         esp_ext_m=st.session_state["esp_ext_m"],
         esp_int_m=st.session_state["esp_int_m"],
+        margem_m=st.session_state["margem_m"],
     )
     
     pdf_data = gerar_pdf_paredes_duplas(
@@ -497,6 +536,7 @@ with col_left:
         st.session_state["comodos"],
         esp_ext_m=st.session_state["esp_ext_m"],
         esp_int_m=st.session_state["esp_int_m"],
+        margem_m=st.session_state["margem_m"],
     )
     
     svg_data = gerar_svg_paredes_duplas(
@@ -505,6 +545,7 @@ with col_left:
         st.session_state["comodos"],
         esp_ext_m=st.session_state["esp_ext_m"],
         esp_int_m=st.session_state["esp_int_m"],
+        margem_m=st.session_state["margem_m"],
     )
 
     col_exp1, col_exp2, col_exp3 = st.columns(3)
