@@ -1,26 +1,24 @@
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
-
 import uuid
 import io
 import math
 import json
 import inspect
-
 import ezdxf
 
-# -------------------------
-# Compat: alinhamento texto ezdxf (novos exigem enum)
-# -------------------------
+# ========================
+# Compatibilidade ezdxf
+# ========================
 try:
     from ezdxf.enums import TextEntityAlignment as TEA
 except Exception:
     TEA = None
 
 
-# =========================
-# Helpers
-# =========================
+# ========================
+# Funções Auxiliares
+# ========================
 def clamp(v, vmin, vmax):
     return max(vmin, min(v, vmax))
 
@@ -32,7 +30,6 @@ def snap(v, step):
 
 
 def stable_hash(obj) -> str:
-    # hash estável para comparar JSON sem ficar rerodando à toa
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
@@ -43,10 +40,7 @@ def ensure_ids(comodos):
 
 
 def comodos_to_drawing(terreno_w_m, terreno_h_m, comodos, px_por_m):
-    """
-    objects[0] = terreno (não selecionável)
-    objects[1:] = comodos (mapeado por índice: comodos[i] <-> objects[i+1])
-    """
+    """Converte cômodos para formato Fabric.js (canvas)"""
     objects = [{
         "type": "rect",
         "left": 0,
@@ -62,7 +56,6 @@ def comodos_to_drawing(terreno_w_m, terreno_h_m, comodos, px_por_m):
     }]
 
     for c in comodos:
-        # y=0 embaixo (planta). No canvas, top=0 é em cima, então invertimos.
         top_px = (terreno_h_m - (c["y"] + c["comprimento"])) * px_por_m
         objects.append({
             "type": "rect",
@@ -80,10 +73,7 @@ def comodos_to_drawing(terreno_w_m, terreno_h_m, comodos, px_por_m):
 
 
 def sanitize_transform_rect(obj):
-    """
-    Aplica scaleX/scaleY no width/height e reseta scale para 1.
-    Isso evita acumular escala e mantém medidas coerentes.
-    """
+    """Aplica scale no width/height"""
     sx = float(obj.get("scaleX", 1.0) or 1.0)
     sy = float(obj.get("scaleY", 1.0) or 1.0)
     w = float(obj.get("width", 0.0) or 0.0) * sx
@@ -96,12 +86,7 @@ def sanitize_transform_rect(obj):
 
 
 def apply_constraints_and_sync(drawing, terreno_w_m, terreno_h_m, comodos, px_por_m, snap_m):
-    """
-    - sanitiza scale (width/height reais)
-    - aplica snap/clamp em pixels
-    - sincroniza comodos (metros) a partir do desenho (objects[1:])
-    - retorna drawing atualizado (sem rebuild completo -> menos “pisca”)
-    """
+    """Sincroniza canvas com comodos, aplicando snap e clamp"""
     if not drawing or "objects" not in drawing:
         return drawing
 
@@ -128,11 +113,9 @@ def apply_constraints_and_sync(drawing, terreno_w_m, terreno_h_m, comodos, px_po
         w_px = float(obj.get("width", 0.0) or 0.0)
         h_px = float(obj.get("height", 0.0) or 0.0)
 
-        # clamp em px (mantém dentro do terreno)
         max_left = max(0.0, terreno_w_px - w_px)
         max_top = max(0.0, terreno_h_px - h_px)
 
-        # snap em px
         if snap_px > 0:
             left_px = snap(left_px, snap_px)
             top_px = snap(top_px, snap_px)
@@ -142,20 +125,16 @@ def apply_constraints_and_sync(drawing, terreno_w_m, terreno_h_m, comodos, px_po
         left_px = clamp(left_px, 0.0, max_left)
         top_px = clamp(top_px, 0.0, max_top)
 
-        # escreve de volta no desenho
         obj["left"] = float(left_px)
         obj["top"] = float(top_px)
         obj["width"] = float(w_px)
         obj["height"] = float(h_px)
 
-        # sincroniza comodos (px -> m)
         w_m = w_px / px_por_m
         h_m = h_px / px_por_m
         x_m = left_px / px_por_m
-        # desfaz inversão do Y: top = (H - (y+h)) * px
         y_m = terreno_h_m - (top_px / px_por_m) - h_m
 
-        # clamp final em metros (segurança)
         x_m = clamp(x_m, 0.0, max(0.0, terreno_w_m - w_m))
         y_m = clamp(y_m, 0.0, max(0.0, terreno_h_m - h_m))
 
@@ -168,9 +147,9 @@ def apply_constraints_and_sync(drawing, terreno_w_m, terreno_h_m, comodos, px_po
     return drawing
 
 
-# =========================
-# DXF com paredes duplas (externa x interna)
-# =========================
+# ========================
+# DXF com Paredes Duplas
+# ========================
 def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=0.12):
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
@@ -180,7 +159,6 @@ def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
     if "TEXTOS" not in doc.layers:
         doc.layers.new(name="TEXTOS", dxfattribs={"color": 2})
 
-    # normalização para evitar problemas de float
     def q(v, nd=4):
         return round(float(v), nd)
 
@@ -191,10 +169,9 @@ def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
             x1, y1, x2, y2 = x2, y2, x1, y1
         return (x1, y1, x2, y2)
 
-    segs = {}   # key -> {"p1","p2","count"}
-    textos = [] # (nome,cx,cy)
+    segs = {}
+    textos = []
 
-    # coletar segmentos dos retângulos
     for c in comodos:
         x, y = float(c["x"]), float(c["y"])
         w, h = float(c["largura"]), float(c["comprimento"])
@@ -219,35 +196,29 @@ def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
         x1, y1 = p1
         x2, y2 = p2
 
-        # horizontal
         if math.isclose(y1, y2, abs_tol=1e-9):
             y = y1
             msp.add_line((x1, y + off), (x2, y + off), dxfattribs={"layer": "PAREDES"})
             msp.add_line((x1, y - off), (x2, y - off), dxfattribs={"layer": "PAREDES"})
             return
 
-        # vertical
         if math.isclose(x1, x2, abs_tol=1e-9):
             x = x1
             msp.add_line((x + off, y1), (x + off, y2), dxfattribs={"layer": "PAREDES"})
             msp.add_line((x - off, y1), (x - off, y2), dxfattribs={"layer": "PAREDES"})
             return
 
-        # fallback (não esperado)
         msp.add_line((x1, y1), (x2, y2), dxfattribs={"layer": "PAREDES"})
 
-    # desenhar segmentos: count==1 -> perímetro (externa); count>=2 -> divisória (interna)
     for item in segs.values():
         thickness = esp_ext_m if item["count"] == 1 else esp_int_m
         draw_double_wall(item["p1"], item["p2"], thickness)
 
-    # textos
     for nome, cx, cy in textos:
         txt = msp.add_text(nome, dxfattribs={"layer": "TEXTOS", "height": 0.30})
         if TEA is not None:
             txt.set_placement((cx, cy), align=TEA.MIDDLE_CENTER)
         else:
-            # versões antigas (fallback)
             try:
                 txt.set_pos((cx, cy), align="MIDDLE_CENTER")
             except Exception:
@@ -258,35 +229,29 @@ def gerar_dxf_paredes_duplas(larg_m, comp_m, comodos, esp_ext_m=0.20, esp_int_m=
     return buff.getvalue()
 
 
-# =========================
-# App
-# =========================
+# ========================
+# App Principal
+# ========================
 st.set_page_config(page_title="AutoPlantas", layout="wide")
-st.title("AutoPlantas — Editor por Blocos")
+st.title("🏭 AutoPlantas — Editor de Plantas Baixas")
 
-# Estado principal
+# Estado
 if "comodos" not in st.session_state:
     st.session_state["comodos"] = []
 ensure_ids(st.session_state["comodos"])
 
-# Config do terreno (persistente)
 if "terreno_w_m" not in st.session_state:
     st.session_state["terreno_w_m"] = 15.0
 if "terreno_h_m" not in st.session_state:
     st.session_state["terreno_h_m"] = 30.0
-
 if "px_por_m" not in st.session_state:
     st.session_state["px_por_m"] = 40
-
 if "snap_m" not in st.session_state:
     st.session_state["snap_m"] = 0.10
-
 if "esp_ext_m" not in st.session_state:
     st.session_state["esp_ext_m"] = 0.20
 if "esp_int_m" not in st.session_state:
     st.session_state["esp_int_m"] = 0.12
-
-# Canvas persistido (para não piscar)
 if "drawing" not in st.session_state:
     st.session_state["drawing"] = None
 if "canvas_ver" not in st.session_state:
@@ -297,19 +262,16 @@ if "last_canvas_hash" not in st.session_state:
 col_left, col_right = st.columns([1, 2], gap="large")
 
 with col_left:
-    st.header("Tamanho do terreno (aplicar)")
+    st.header("⚙️ Configurações")
 
-    # FORM evita rerun contínuo enquanto você está arrastando no canvas
     with st.form("form_terreno"):
         w_new = st.number_input("Largura do terreno (m)", 5.0, 200.0, float(st.session_state["terreno_w_m"]), step=1.0)
         h_new = st.number_input("Comprimento do terreno (m)", 5.0, 200.0, float(st.session_state["terreno_h_m"]), step=1.0)
         px_new = st.slider("Escala (px por metro)", 10, 120, int(st.session_state["px_por_m"]))
         snap_new = st.selectbox("Snap (m)", [0.0, 0.05, 0.10, 0.20, 0.50], index=[0.0, 0.05, 0.10, 0.20, 0.50].index(float(st.session_state["snap_m"])))
-
         esp_ext_new = st.number_input("Parede externa (m)", 0.08, 0.60, float(st.session_state["esp_ext_m"]), step=0.01)
         esp_int_new = st.number_input("Parede interna (m)", 0.05, 0.40, float(st.session_state["esp_int_m"]), step=0.01)
-
-        aplicar = st.form_submit_button("Aplicar tamanho/escala")
+        aplicar = st.form_submit_button("✅ Aplicar")
 
     if aplicar:
         st.session_state["terreno_w_m"] = float(w_new)
@@ -318,8 +280,6 @@ with col_left:
         st.session_state["snap_m"] = float(snap_new)
         st.session_state["esp_ext_m"] = float(esp_ext_new)
         st.session_state["esp_int_m"] = float(esp_int_new)
-
-        # ao mudar terreno/escala, recria o desenho e reseta o componente
         st.session_state["drawing"] = comodos_to_drawing(
             st.session_state["terreno_w_m"],
             st.session_state["terreno_h_m"],
@@ -331,12 +291,12 @@ with col_left:
         st.rerun()
 
     st.divider()
-    st.header("Adicionar bloco")
+    st.header("➕ Adicionar Bloco")
 
     nome = st.selectbox("Tipo", ["Escritório", "Banheiro", "Almoxarifado", "Produção", "Refeitório"])
     c1, c2 = st.columns(2)
-    w_m = c1.number_input("Largura do bloco (m)", 0.5, 50.0, 3.0, step=0.5)
-    h_m = c2.number_input("Comprimento do bloco (m)", 0.5, 50.0, 3.0, step=0.5)
+    w_m = c1.number_input("Largura (m)", 0.5, 50.0, 3.0, step=0.5)
+    h_m = c2.number_input("Comprimento (m)", 0.5, 50.0, 3.0, step=0.5)
 
     b1, b2 = st.columns(2)
     if b1.button("Adicionar", use_container_width=True):
@@ -348,8 +308,6 @@ with col_left:
             "largura": float(w_m),
             "comprimento": float(h_m),
         })
-
-        # recria o desenho e reseta canvas
         st.session_state["drawing"] = comodos_to_drawing(
             st.session_state["terreno_w_m"],
             st.session_state["terreno_h_m"],
@@ -373,7 +331,7 @@ with col_left:
         st.rerun()
 
     st.divider()
-    if st.button("Recriar desenho (se travar)", use_container_width=True):
+    if st.button("🔄 Recriar desenho (se travar)", use_container_width=True):
         st.session_state["drawing"] = comodos_to_drawing(
             st.session_state["terreno_w_m"],
             st.session_state["terreno_h_m"],
@@ -385,7 +343,7 @@ with col_left:
         st.rerun()
 
     st.divider()
-    st.subheader("Exportar")
+    st.header("📥 Exportar")
 
     dxf_text = gerar_dxf_paredes_duplas(
         st.session_state["terreno_w_m"],
@@ -395,7 +353,7 @@ with col_left:
         esp_int_m=st.session_state["esp_int_m"],
     )
     st.download_button(
-        "Baixar DXF (paredes duplas)",
+        "📄 Baixar DXF",
         data=dxf_text,
         file_name="planta.dxf",
         mime="application/dxf",
@@ -403,7 +361,7 @@ with col_left:
     )
 
 with col_right:
-    st.subheader("Editor (arrastar / redimensionar)")
+    st.subheader("🎨 Editor (arrastar / redimensionar)")
 
     terreno_w_m = float(st.session_state["terreno_w_m"])
     terreno_h_m = float(st.session_state["terreno_h_m"])
@@ -413,11 +371,9 @@ with col_right:
     canvas_w = int(terreno_w_m * px_por_m)
     canvas_h = int(terreno_h_m * px_por_m)
 
-    # cria drawing uma vez, e depois preserva (para não piscar)
     if st.session_state["drawing"] is None:
         st.session_state["drawing"] = comodos_to_drawing(terreno_w_m, terreno_h_m, st.session_state["comodos"], px_por_m)
 
-    # compat: realtime_update existe em algumas versões
     sig = inspect.signature(st_canvas)
     canvas_kwargs = dict(
         fill_color="rgba(0,0,0,0)",
@@ -433,7 +389,6 @@ with col_right:
         key=f"planta_canvas_{st.session_state['canvas_ver']}",
     )
     if "realtime_update" in sig.parameters:
-        # importante: evita rerun a cada micro-movimento
         canvas_kwargs["realtime_update"] = False
 
     canvas_result = st_canvas(**canvas_kwargs)
@@ -441,7 +396,6 @@ with col_right:
     if canvas_result.json_data:
         current_hash = stable_hash(canvas_result.json_data)
         if current_hash != st.session_state["last_canvas_hash"]:
-            # aplica snap/clamp e sincroniza comodos sem rebuild completo (menos flicker)
             st.session_state["drawing"] = apply_constraints_and_sync(
                 canvas_result.json_data,
                 terreno_w_m,
@@ -452,9 +406,7 @@ with col_right:
             )
             st.session_state["last_canvas_hash"] = current_hash
 
-    st.caption(
-        "Dica: clique no bloco para selecionar, arraste para mover e use as alças para redimensionar."
-    )
+    st.caption("💡 Clique no bloco para selecionar, arraste para mover e use as alças para redimensionar.")
 
-    with st.expander("Blocos (debug)"):
+    with st.expander("📋 Blocos (debug)"):
         st.json(st.session_state["comodos"])
