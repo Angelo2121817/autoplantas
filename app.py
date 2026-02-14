@@ -458,6 +458,7 @@ if "esp_int_m" not in st.session_state:
     st.session_state["esp_int_m"] = 0.12
 if "margem_m" not in st.session_state:
     st.session_state["margem_m"] = 0.50
+    st.session_state["margem_m"] = 0.50
 if "drawing" not in st.session_state:
     st.session_state["drawing"] = None
 if "last_canvas_hash" not in st.session_state:
