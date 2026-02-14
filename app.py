@@ -1,92 +1,43 @@
 import streamlit as st
+from streamlit_drawable_canvas import st_canvas
 import ezdxf
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import io
 import uuid
 
-# ----------------------------
+# ---------------------------
 # CONFIG
-# ----------------------------
-st.set_page_config(page_title="Gerador de Galpão PRO", layout="wide")
-st.title("🏭 Gerador de Layout Industrial - Modo General")
+# ---------------------------
+st.set_page_config(page_title="Planta por Blocos", layout="wide")
+st.title("Planta Baixa por Blocos (arrastar e soltar)")
 
-TIPOS = ["Escritório", "Banheiro", "Almoxarifado", "Produção", "Refeitório"]
+# ---------------------------
+# STATE
+# ---------------------------
+if "blocos" not in st.session_state:
+    # Cada bloco tem um id estável (para sincronizar com objetos do canvas)
+    st.session_state["blocos"] = []
 
-# ----------------------------
-# SESSION STATE
-# ----------------------------
-if "comodos" not in st.session_state:
-    st.session_state["comodos"] = []
+if "canvas_key" not in st.session_state:
+    st.session_state["canvas_key"] = 0  # para forçar reset do canvas quando necessário
 
-if "selected_id" not in st.session_state:
-    st.session_state["selected_id"] = None
+# ---------------------------
+# FUNÇÕES
+# ---------------------------
+def m_to_px(m, escala_px_por_m):
+    return m * escala_px_por_m
 
+def px_to_m(px, escala_px_por_m):
+    return px / escala_px_por_m
 
-# ----------------------------
-# HELPERS (regras geométricas)
-# ----------------------------
-def clamp(value, min_v, max_v):
-    return max(min_v, min(value, max_v))
-
-def dentro_do_galpao(x, y, w, h, larg_total, comp_total):
-    """Retorna True se o retângulo estiver completamente dentro do galpão."""
-    if x < 0 or y < 0:
-        return False
-    if x + w > larg_total:
-        return False
-    if y + h > comp_total:
-        return False
-    return True
-
-def retangulos_colidem(a, b):
-    """AABB collision (retângulos alinhados aos eixos)."""
-    ax1, ay1 = a["x"], a["y"]
-    ax2, ay2 = a["x"] + a["largura"], a["y"] + a["comprimento"]
-
-    bx1, by1 = b["x"], b["y"]
-    bx2, by2 = b["x"] + b["largura"], b["y"] + b["comprimento"]
-
-    # Se um está totalmente à esquerda/direita/acima/abaixo do outro, não colide
-    if ax2 <= bx1 or bx2 <= ax1 or ay2 <= by1 or by2 <= ay1:
-        return False
-    return True
-
-def tem_colisao(lista, candidato, ignorar_id=None):
-    for c in lista:
-        if ignorar_id is not None and c["id"] == ignorar_id:
-            continue
-        if retangulos_colidem(c, candidato):
-            return True
-    return False
-
-def get_comodo_by_id(cid):
-    for c in st.session_state["comodos"]:
-        if c["id"] == cid:
-            return c
-    return None
-
-def update_comodo(cid, novos_campos):
-    for i, c in enumerate(st.session_state["comodos"]):
-        if c["id"] == cid:
-            st.session_state["comodos"][i] = {**c, **novos_campos}
-            return True
-    return False
-
-def delete_comodo(cid):
-    st.session_state["comodos"] = [c for c in st.session_state["comodos"] if c["id"] != cid]
-    if st.session_state["selected_id"] == cid:
-        st.session_state["selected_id"] = None
-
-
-# ----------------------------
-# DXF
-# ----------------------------
-def gerar_dxf_completo(larg_total, comp_total, lista_comodos):
+def gerar_dxf(larg_m, comp_m, objetos_canvas, escala_px_por_m):
+    """
+    objetos_canvas: lista de shapes do canvas (retângulos), em pixels
+    converte px -> m e escreve DXF
+    """
     doc = ezdxf.new("R2010")
     msp = doc.modelspace()
 
-    # Camadas
+    # layers
     if "ESTRUTURA_EXTERNA" not in doc.layers:
         doc.layers.new(name="ESTRUTURA_EXTERNA", dxfattribs={"color": 7})
     if "PAREDES_INTERNAS" not in doc.layers:
@@ -94,261 +45,152 @@ def gerar_dxf_completo(larg_total, comp_total, lista_comodos):
     if "TEXTOS" not in doc.layers:
         doc.layers.new(name="TEXTOS", dxfattribs={"color": 2})
 
-    # Galpão externo
-    pontos_externos = [(0, 0), (larg_total, 0), (larg_total, comp_total), (0, comp_total), (0, 0)]
+    # contorno do terreno/galpão (em metros)
+    pontos_externos = [(0, 0), (larg_m, 0), (larg_m, comp_m), (0, comp_m), (0, 0)]
     msp.add_lwpolyline(pontos_externos, dxfattribs={"layer": "ESTRUTURA_EXTERNA"})
 
-    # Cômodos
-    for item in lista_comodos:
-        x, y = item["x"], item["y"]
-        l, c = item["largura"], item["comprimento"]
-        nome = item["nome"]
+    # objetos (retângulos) do canvas
+    for obj in objetos_canvas:
+        if obj.get("type") != "rect":
+            continue
 
-        pontos_interno = [(x, y), (x + l, y), (x + l, y + c), (x, y + c), (x, y)]
-        msp.add_lwpolyline(pontos_interno, dxfattribs={"layer": "PAREDES_INTERNAS"})
+        # No fabric.js (base do canvas), retângulo tem left/top/width/height e scaleX/scaleY
+        left_px = obj.get("left", 0)
+        top_px = obj.get("top", 0)
+        w_px = obj.get("width", 0) * obj.get("scaleX", 1)
+        h_px = obj.get("height", 0) * obj.get("scaleY", 1)
 
-        msp.add_text(
-            nome,
-            dxfattribs={"layer": "TEXTOS", "height": 0.3},
-        ).set_pos((x + l / 2, y + c / 2), align="MIDDLE_CENTER")
+        # Conversão px -> m
+        x_m = px_to_m(left_px, escala_px_por_m)
+        y_m = px_to_m(top_px, escala_px_por_m)
+        w_m = px_to_m(w_px, escala_px_por_m)
+        h_m = px_to_m(h_px, escala_px_por_m)
+
+        # IMPORTANTE: origem do canvas (0,0) é topo-esquerda.
+        # Em planta/DXF normalmente você quer origem em baixo-esquerda.
+        # Então convertemos Y invertendo:
+        # y_canvas_top = top_px -> y_m_top
+        # y_dxf = comp_m - (y_m_top + h_m)
+        y_dxf = comp_m - (y_m + h_m)
+        x_dxf = x_m
+
+        nome = obj.get("name", "Bloco")
+
+        pontos = [
+            (x_dxf, y_dxf),
+            (x_dxf + w_m, y_dxf),
+            (x_dxf + w_m, y_dxf + h_m),
+            (x_dxf, y_dxf + h_m),
+            (x_dxf, y_dxf),
+        ]
+        msp.add_lwpolyline(pontos, dxfattribs={"layer": "PAREDES_INTERNAS"})
+        msp.add_text(nome, dxfattribs={"layer": "TEXTOS", "height": 0.3}).set_pos(
+            (x_dxf + w_m / 2, y_dxf + h_m / 2), align="MIDDLE_CENTER"
+        )
 
     output = io.StringIO()
     doc.write(output)
     return output.getvalue()
 
+def montar_drawing_inicial(blocos, escala_px_por_m):
+    """
+    Retorna a lista de objetos do fabric.js para o canvas.
+    Vamos desenhar como retângulos movíveis.
+    """
+    objs = []
+    for b in blocos:
+        objs.append({
+            "type": "rect",
+            "left": m_to_px(b["x_m"], escala_px_por_m),
+            "top": m_to_px(b["y_m"], escala_px_por_m),
+            "width": m_to_px(b["w_m"], escala_px_por_m),
+            "height": m_to_px(b["h_m"], escala_px_por_m),
+            "fill": "rgba(160,203,232,0.45)",
+            "stroke": "blue",
+            "strokeWidth": 2,
+            "name": b["nome"],     # campo extra (vai no JSON)
+            "bloc_id": b["id"],    # id estável (vai no JSON)
+        })
+    return {"version": "4.4.0", "objects": objs}
 
-# ----------------------------
-# PREVIEW
-# ----------------------------
-def plotar_preview_interativo(larg_total, comp_total, lista_comodos, selected_id=None):
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    rect_main = patches.Rectangle(
-        (0, 0),
-        larg_total,
-        comp_total,
-        linewidth=3,
-        edgecolor="black",
-        facecolor="#f0f0f0",
-    )
-    ax.add_patch(rect_main)
-
-    for item in lista_comodos:
-        is_sel = (selected_id is not None and item["id"] == selected_id)
-        edge = "red" if is_sel else "blue"
-        lw = 3 if is_sel else 2
-        face = "#ffb3b3" if is_sel else "#a0cbe8"
-        alpha = 0.65 if is_sel else 0.5
-
-        rect = patches.Rectangle(
-            (item["x"], item["y"]),
-            item["largura"],
-            item["comprimento"],
-            linewidth=lw,
-            edgecolor=edge,
-            facecolor=face,
-            alpha=alpha,
-        )
-        ax.add_patch(rect)
-
-        ax.text(
-            item["x"] + item["largura"] / 2,
-            item["y"] + item["comprimento"] / 2,
-            item["nome"],
-            ha="center",
-            va="center",
-            fontsize=9,
-            color="darkred" if is_sel else "darkblue",
-            weight="bold",
-        )
-
-    ax.set_xlim(-1, larg_total + 1)
-    ax.set_ylim(-1, comp_total + 1)
-    ax.set_aspect("equal")
-    ax.grid(True, linestyle="--", alpha=0.3)
-    return fig
-
-
-# ----------------------------
+# ---------------------------
 # UI
-# ----------------------------
-col_config, col_preview = st.columns([1, 2])
+# ---------------------------
+col_config, col_canvas = st.columns([1, 2])
 
 with col_config:
-    st.header("1. O Galpão")
-    largura = st.number_input("Largura Total (m)", 10.0, 300.0, 15.0, step=1.0)
-    comprimento = st.number_input("Comprimento Total (m)", 10.0, 300.0, 30.0, step=1.0)
+    st.header("1) Área (m)")
+    largura_m = st.number_input("Largura total (m)", 5.0, 200.0, 15.0)
+    comprimento_m = st.number_input("Comprimento total (m)", 5.0, 300.0, 30.0)
 
     st.divider()
 
-    st.header("2. Adicionar Blocos")
-    tipo_comodo = st.selectbox("Tipo", TIPOS)
+    st.header("2) Escala do canvas")
+    escala_px_por_m = st.slider("Pixels por metro", 10, 80, 30)
+    canvas_w = int(m_to_px(largura_m, escala_px_por_m))
+    canvas_h = int(m_to_px(comprimento_m, escala_px_por_m))
 
+    st.divider()
+
+    st.header("3) Adicionar bloco")
+    tipo = st.selectbox("Tipo", ["Escritório", "Banheiro", "Almoxarifado", "Produção", "Refeitório"])
     c1, c2 = st.columns(2)
-    w_comodo = c1.number_input("Largura", 0.5, 200.0, 3.0, step=0.5)
-    h_comodo = c2.number_input("Comprimento", 0.5, 200.0, 3.0, step=0.5)
+    w_m = c1.number_input("Largura (m)", 1.0, 50.0, 3.0)
+    h_m = c2.number_input("Comprimento (m)", 1.0, 50.0, 3.0)
 
-    st.info("Posição (canto inferior esquerdo).")
+    # posição inicial (em metros) só para “nascer” no canvas; depois o usuário arrasta
+    st.caption("Posição inicial é só para nascer no canvas (depois arrasta).")
     c3, c4 = st.columns(2)
-    pos_x = c3.number_input("X", 0.0, largura, 0.0, step=0.5)
-    pos_y = c4.number_input("Y", 0.0, comprimento, 0.0, step=0.5)
+    x_m = c3.number_input("X inicial (m)", 0.0, largura_m, 0.5)
+    y_m = c4.number_input("Y inicial (m) (a partir do topo do canvas)", 0.0, comprimento_m, 0.5)
 
-    validar_colisao = st.checkbox("Evitar sobreposição (colisão)", value=False)
-
-    if st.button("➕ Adicionar Bloco"):
-        novo = {
-            "id": str(uuid.uuid4()),
-            "nome": tipo_comodo,
-            "largura": float(w_comodo),
-            "comprimento": float(h_comodo),
-            "x": float(pos_x),
-            "y": float(pos_y),
-        }
-
-        ok = True
-        if not dentro_do_galpao(novo["x"], novo["y"], novo["largura"], novo["comprimento"], largura, comprimento):
-            st.error("Esse bloco sai para fora do galpão. Ajuste posição ou tamanho.")
-            ok = False
-
-        if validar_colisao and tem_colisao(st.session_state["comodos"], novo):
-            st.error("Esse bloco colide com outro. Ajuste posição.")
-            ok = False
-
-        if ok:
-            st.session_state["comodos"].append(novo)
-            st.session_state["selected_id"] = novo["id"]
-            st.success(f"{tipo_comodo} adicionado!")
-
-    if st.button("🗑️ Limpar Tudo (Resetar)"):
-        st.session_state["comodos"] = []
-        st.session_state["selected_id"] = None
+    if st.button("➕ Inserir bloco"):
+        st.session_state["blocos"].append({
+            "id": str(uuid.uuid4())[:8],
+            "nome": tipo,
+            "w_m": float(w_m),
+            "h_m": float(h_m),
+            "x_m": float(x_m),
+            "y_m": float(y_m),
+        })
+        # força o canvas recarregar com o novo bloco
+        st.session_state["canvas_key"] += 1
         st.rerun()
 
-    st.divider()
+    if st.button("🗑️ Limpar tudo"):
+        st.session_state["blocos"] = []
+        st.session_state["canvas_key"] += 1
+        st.rerun()
 
-    st.header("3. Editar Bloco Existente")
+with col_canvas:
+    st.subheader("Arraste e redimensione os blocos")
 
-    if len(st.session_state["comodos"]) == 0:
-        st.caption("Ainda não há blocos para editar.")
-    else:
-        # Lista para seleção
-        options = []
-        for c in st.session_state["comodos"]:
-            label = f"{c['nome']} | id:{c['id'][:8]} | ({c['x']:.1f},{c['y']:.1f}) {c['largura']:.1f}x{c['comprimento']:.1f}"
-            options.append((label, c["id"]))
+    drawing_data = montar_drawing_inicial(st.session_state["blocos"], escala_px_por_m)
 
-        # Define seleção padrão
-        default_index = 0
-        if st.session_state["selected_id"] is not None:
-            for i, (_, cid) in enumerate(options):
-                if cid == st.session_state["selected_id"]:
-                    default_index = i
-                    break
+    canvas_result = st_canvas(
+        fill_color="rgba(160,203,232,0.35)",
+        stroke_width=2,
+        stroke_color="blue",
+        background_color="#f2f2f2",
+        width=canvas_w,
+        height=canvas_h,
+        drawing_mode="transform",  # move/resize/rotate
+        initial_drawing=drawing_data,
+        key=f"canvas_{st.session_state['canvas_key']}",
+        update_streamlit=True,
+    )
 
-        selected_label = st.selectbox(
-            "Selecione um bloco",
-            [o[0] for o in options],
-            index=default_index,
-        )
-        selected_id = dict(options).get(selected_label)
-        st.session_state["selected_id"] = selected_id
-
-        comodo = get_comodo_by_id(selected_id)
-
-        if comodo is not None:
-            novo_nome = st.selectbox("Tipo/Nome", TIPOS, index=TIPOS.index(comodo["nome"]) if comodo["nome"] in TIPOS else 0)
-
-            e1, e2 = st.columns(2)
-            novo_w = e1.number_input("Nova largura", 0.5, 200.0, float(comodo["largura"]), step=0.5, key="edit_w")
-            novo_h = e2.number_input("Novo comprimento", 0.5, 200.0, float(comodo["comprimento"]), step=0.5, key="edit_h")
-
-            e3, e4 = st.columns(2)
-            novo_x = e3.number_input("Novo X", 0.0, largura, float(comodo["x"]), step=0.5, key="edit_x")
-            novo_y = e4.number_input("Novo Y", 0.0, comprimento, float(comodo["y"]), step=0.5, key="edit_y")
-
-            # Ajuste automático opcional (clamp)
-            auto_ajustar = st.checkbox("Auto-ajustar para caber no galpão", value=True)
-
-            candidato = {
-                "id": comodo["id"],
-                "nome": novo_nome,
-                "largura": float(novo_w),
-                "comprimento": float(novo_h),
-                "x": float(novo_x),
-                "y": float(novo_y),
-            }
-
-            if auto_ajustar:
-                candidato["x"] = clamp(candidato["x"], 0.0, max(0.0, largura - candidato["largura"]))
-                candidato["y"] = clamp(candidato["y"], 0.0, max(0.0, comprimento - candidato["comprimento"]))
-
-            b1, b2, b3 = st.columns(3)
-
-            if b1.button("💾 Aplicar alterações"):
-                ok = True
-                if not dentro_do_galpao(candidato["x"], candidato["y"], candidato["largura"], candidato["comprimento"], largura, comprimento):
-                    st.error("Alteração inválida: bloco sai do galpão.")
-                    ok = False
-
-                if validar_colisao and tem_colisao(st.session_state["comodos"], candidato, ignorar_id=comodo["id"]):
-                    st.error("Alteração inválida: bloco colide com outro.")
-                    ok = False
-
-                if ok:
-                    update_comodo(comodo["id"], candidato)
-                    st.success("Bloco atualizado!")
-
-            if b2.button("📄 Duplicar"):
-                dup = {**comodo, "id": str(uuid.uuid4())}
-                # desloca um pouco para não ficar exatamente em cima
-                dup["x"] = clamp(dup["x"] + 0.5, 0.0, max(0.0, largura - dup["largura"]))
-                dup["y"] = clamp(dup["y"] + 0.5, 0.0, max(0.0, comprimento - dup["comprimento"]))
-                if (not validar_colisao) or (not tem_colisao(st.session_state["comodos"], dup)):
-                    st.session_state["comodos"].append(dup)
-                    st.session_state["selected_id"] = dup["id"]
-                    st.success("Duplicado!")
-                else:
-                    st.error("Não foi possível duplicar (colisão). Desative colisão ou ajuste depois.")
-
-            if b3.button("🧨 Excluir"):
-                delete_comodo(comodo["id"])
-                st.success("Bloco removido.")
-                st.rerun()
+    objetos = []
+    if canvas_result.json_data and "objects" in canvas_result.json_data:
+        objetos = canvas_result.json_data["objects"]
 
     st.divider()
 
-    st.header("4. Lista de Blocos")
-    if len(st.session_state["comodos"]) > 0:
-        # visão rápida
-        st.dataframe(
-            [
-                {
-                    "id": c["id"][:8],
-                    "tipo": c["nome"],
-                    "x": c["x"],
-                    "y": c["y"],
-                    "largura": c["largura"],
-                    "comprimento": c["comprimento"],
-                }
-                for c in st.session_state["comodos"]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.caption("Sem blocos.")
-
-with col_preview:
-    st.subheader("👀 Planta Baixa em Tempo Real")
-    fig = plotar_preview_interativo(largura, comprimento, st.session_state["comodos"], st.session_state["selected_id"])
-    st.pyplot(fig)
-
-    st.divider()
-
-    dxf_texto = gerar_dxf_completo(largura, comprimento, st.session_state["comodos"])
+    # Exportar DXF (usa o que está no canvas AGORA)
+    dxf_text = gerar_dxf(largura_m, comprimento_m, objetos, escala_px_por_m)
     st.download_button(
-        label="📥 BAIXAR PROJETO (.DXF)",
-        data=dxf_texto,
-        file_name="planta_industrial_general.dxf",
+        "📥 Baixar DXF",
+        data=dxf_text,
+        file_name="planta_blocos.dxf",
         mime="application/dxf",
     )
